@@ -1,335 +1,249 @@
-from flask import Flask, request, jsonify, render_template_string, redirect, session, send_file
-import psycopg2
-import os
-import pandas as pd
+from flask import Flask, request, redirect
+import sqlite3
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
-app.secret_key = "segredo_empresa"
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
-
-# ===============================
-# CONEXÃO
-# ===============================
+# =========================
+# BANCO
+# =========================
 def conectar():
-    return psycopg2.connect(DATABASE_URL, sslmode='require')
+    return sqlite3.connect("estoque.db")
 
-# ===============================
-# CRIAR TABELAS
-# ===============================
-def criar_tabelas():
+
+def criar_tabela():
     conn = conectar()
-    cur = conn.cursor()
+    cursor = conn.cursor()
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS usuarios (
-        id SERIAL PRIMARY KEY,
-        usuario TEXT UNIQUE,
-        senha TEXT,
-        tipo TEXT
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS estoque (
-        produto TEXT PRIMARY KEY,
-        quantidade INTEGER,
-        gerenciadora TEXT
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS movimentacoes (
-        id SERIAL PRIMARY KEY,
-        produto TEXT,
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS movimentacao (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        data TEXT,
+        gerenciadora TEXT,
         tipo TEXT,
-        quantidade INTEGER,
-        data TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        item TEXT,
+        quantidade INTEGER
     )
     """)
-
-    cur.execute("SELECT * FROM usuarios WHERE usuario='ADMIN'")
-    if not cur.fetchone():
-        cur.execute("INSERT INTO usuarios VALUES (DEFAULT,'ADMIN','123','admin')")
 
     conn.commit()
-    cur.close()
     conn.close()
 
-# ===============================
-# VALIDAÇÃO MAIÚSCULA
-# ===============================
-def validar_maiusculo(texto):
-    return texto == texto.upper()
 
-# ===============================
-# LOGIN
-# ===============================
-@app.route("/login", methods=["GET","POST"])
-def login():
-    if request.method == "POST":
-        user = request.form["user"].upper()
-        senha = request.form["senha"]
+criar_tabela()
+
+
+# =========================
+# ESTOQUE + IA
+# =========================
+def calcular():
+    conn = conectar()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT gerenciadora, item,
+    SUM(CASE WHEN tipo='ENTRADA' THEN quantidade ELSE 0 END),
+    SUM(CASE WHEN tipo='SAIDA' THEN quantidade ELSE 0 END)
+    FROM movimentacao
+    GROUP BY gerenciadora, item
+    """)
+
+    dados = cursor.fetchall()
+    conn.close()
+
+    resultado = []
+
+    for ger, item, entrada, saida in dados:
+        entrada = entrada or 0
+        saida = saida or 0
+        saldo = entrada - saida
 
         conn = conectar()
-        cur = conn.cursor()
-        cur.execute("SELECT tipo FROM usuarios WHERE usuario=%s AND senha=%s",(user,senha))
-        res = cur.fetchone()
+        cursor = conn.cursor()
 
-        if res:
-            session["user"] = user
-            session["tipo"] = res[0]
-            return redirect("/")
+        data_limite = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
 
-        return "Login inválido"
+        cursor.execute("""
+        SELECT SUM(quantidade)
+        FROM movimentacao
+        WHERE tipo='SAIDA'
+        AND gerenciadora=?
+        AND item=?
+        AND data >= ?
+        """, (ger, item, data_limite))
 
-    return """
-    <h2>Login</h2>
-    <form method="post">
-    <input name="user" placeholder="USUARIO"><br>
-    <input name="senha" type="password"><br>
-    <button>Entrar</button>
-    </form>
-    """
+        media = cursor.fetchone()[0] or 0
+        conn.close()
 
-# ===============================
+        projecao = media * 6
+        status = "PEDIR" if saldo < projecao else "OK"
+
+        resultado.append({
+            "ger": ger,
+            "item": item,
+            "entrada": entrada,
+            "saida": saida,
+            "saldo": saldo,
+            "media": media,
+            "proj": projecao,
+            "status": status
+        })
+
+    return resultado
+
+
+# =========================
 # HOME
-# ===============================
+# =========================
 @app.route("/")
-def home():
-    if "user" not in session:
-        return redirect("/login")
+def index():
+    dados = calcular()
 
-    return render_template_string("""
+    html = """
     <html>
     <head>
-    <style>
-    body { background:#0f172a; color:white; font-family:Arial;}
-    .box { background:#1e293b; padding:20px; margin:20px; border-radius:10px;}
-    input, select { padding:10px; margin:5px;}
-    button { padding:10px; background:#22c55e; border:none;}
-    table { width:100%; margin-top:10px; border-collapse:collapse;}
-    th, td { padding:10px; border:1px solid white;}
-    </style>
-    </head>
+        <title>Estoque Inteligente</title>
+        <style>
+            body { font-family: Arial; background: #f4f4f4; text-align:center; }
 
+            h1 { background:#222; color:white; padding:10px; }
+
+            form {
+                background:white;
+                padding:20px;
+                margin:20px auto;
+                width:500px;
+                border-radius:10px;
+                box-shadow:0 0 10px #ccc;
+            }
+
+            select, input {
+                padding:10px;
+                margin:5px;
+                width:90%;
+            }
+
+            button {
+                background:green;
+                color:white;
+                padding:15px;
+                border:none;
+                width:95%;
+                font-size:18px;
+                border-radius:8px;
+            }
+
+            table {
+                width:95%;
+                margin:auto;
+                border-collapse:collapse;
+                background:white;
+            }
+
+            th, td {
+                padding:8px;
+                border:1px solid #ccc;
+            }
+
+            th { background:black; color:white; }
+
+            .PRIME { background:#2e7d32; color:white; }
+            .LINK { background:#1565c0; color:white; }
+            .NEO { background:#00897b; color:white; }
+            .OUTROS { background:#ef6c00; color:white; }
+
+        </style>
+    </head>
     <body>
 
-    <h1>🚀 Sistema de Estoque Empresarial</h1>
+    <h1>📦 ESTOQUE INTELIGENTE</h1>
 
-    <div class="box">
-    <h2>Movimentação</h2>
-    <input id="produto" placeholder="PRODUTO (MAIÚSCULO)">
-    <input id="qtd" type="number" placeholder="Quantidade">
+    <form method="POST" action="/inserir">
+        <select name="gerenciadora">
+            <option>PRIME</option>
+            <option>LINK</option>
+            <option>NEO</option>
+            <option>OUTROS</option>
+        </select>
 
-    <select id="tipo">
-        <option>ENTRADA</option>
-        <option>SAIDA</option>
-    </select>
+        <select name="tipo">
+            <option>ENTRADA</option>
+            <option>SAIDA</option>
+        </select>
 
-    <select id="ger">
-        <option>PRIME</option>
-        <option>LINK</option>
-        <option>NEO</option>
-        <option>FITMOBY</option>
-        <option>OUTROS</option>
-    </select>
+        <input name="item" placeholder="ITEM" required>
+        <input name="quantidade" type="number" placeholder="QUANTIDADE" required>
 
-    <button onclick="mov()">Salvar</button>
-    </div>
+        <button type="submit">INSERIR</button>
+    </form>
 
-    <div class="box">
-    <h2>Estoque (Planilha)</h2>
-    <button onclick="carregar()">Atualizar</button>
+    <table>
+    <tr>
+        <th>GERENCIADORA</th>
+        <th>ITEM</th>
+        <th>ENTRADA</th>
+        <th>SAIDA</th>
+        <th>SALDO</th>
+        <th>MÉDIA</th>
+        <th>6 MESES</th>
+        <th>STATUS</th>
+    </tr>
+    """
 
-    <table id="tabela">
-        <tr>
-            <th>Produto</th>
-            <th>Quantidade</th>
-            <th>Gerenciadora</th>
+    for d in dados:
+        html += f"""
+        <tr class="{d['ger']}">
+            <td>{d['ger']}</td>
+            <td>{d['item']}</td>
+            <td>{d['entrada']}</td>
+            <td>{d['saida']}</td>
+            <td>{d['saldo']}</td>
+            <td>{d['media']}</td>
+            <td>{d['proj']}</td>
+            <td><b>{d['status']}</b></td>
         </tr>
-    </table>
-    </div>
+        """
 
-    <div class="box">
-    <h2>Previsão IA (6 meses)</h2>
-    <button onclick="previsao()">Gerar</button>
-    <pre id="prev"></pre>
-    </div>
+    html += "</table></body></html>"
 
-    <div class="box">
-    <h2>Relatório</h2>
-    <a href="/excel">Baixar Excel</a>
-    </div>
+    return html
 
-    <script>
-    async function mov(){
-        let res = await fetch('/mov', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({
-                produto:produto.value,
-                quantidade:qtd.value,
-                tipo:tipo.value,
-                gerenciadora:ger.value
-            })
-        })
 
-        let r = await res.json()
-
-        if(r.erro){
-            alert(r.erro)
-        }else{
-            alert("Salvo com sucesso")
-            carregar()
-        }
-    }
-
-    async function carregar(){
-        let r = await fetch('/estoque')
-        let d = await r.json()
-
-        let tabela = document.getElementById("tabela")
-        tabela.innerHTML = `
-        <tr>
-            <th>Produto</th>
-            <th>Quantidade</th>
-            <th>Gerenciadora</th>
-        </tr>`
-
-        d.forEach(item=>{
-            let alerta = item[1] < 5 ? "style='color:red'" : ""
-
-            tabela.innerHTML += `
-            <tr ${alerta}>
-                <td>${item[0]}</td>
-                <td>${item[1]}</td>
-                <td>${item[2]}</td>
-            </tr>`
-        })
-    }
-
-    async function previsao(){
-        let r = await fetch('/previsao')
-        let d = await r.json()
-        prev.innerText = JSON.stringify(d,null,2)
-    }
-
-    carregar()
-    </script>
-
-    </body>
-    </html>
-    """)
-
-# ===============================
-# MOVIMENTAÇÃO
-# ===============================
-@app.route("/mov", methods=["POST"])
-def mov():
-    data = request.json
-
-    produto = data["produto"]
-
-    if not validar_maiusculo(produto):
-        return jsonify({"erro": "DIGITE EM MAIÚSCULO"}), 400
-
-    qtd = int(data["quantidade"])
-    tipo = data["tipo"]
-    ger = data["gerenciadora"]
-
-    conn = conectar()
-    cur = conn.cursor()
-
-    cur.execute("SELECT quantidade FROM estoque WHERE produto=%s",(produto,))
-    res = cur.fetchone()
-
-    if res:
-        atual = res[0]
-
-        if tipo == "SAIDA" and atual < qtd:
-            return jsonify({"erro": "ESTOQUE INSUFICIENTE"}), 400
-
-        nova = atual + qtd if tipo == "ENTRADA" else atual - qtd
-
-        cur.execute("""
-            UPDATE estoque SET quantidade=%s, gerenciadora=%s
-            WHERE produto=%s
-        """,(nova, ger, produto))
-
-    else:
-        if tipo == "SAIDA":
-            return jsonify({"erro": "PRODUTO NÃO EXISTE"}), 400
-
-        cur.execute("""
-            INSERT INTO estoque (produto, quantidade, gerenciadora)
-            VALUES (%s,%s,%s)
-        """,(produto, qtd, ger))
-
-    cur.execute("""
-        INSERT INTO movimentacoes (produto,tipo,quantidade)
-        VALUES (%s,%s,%s)
-    """,(produto, tipo, qtd))
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    return jsonify({"msg":"OK"})
-
-# ===============================
-# ESTOQUE
-# ===============================
-@app.route("/estoque")
-def estoque():
-    conn = conectar()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM estoque ORDER BY produto")
-    dados = cur.fetchall()
-    cur.close()
-    conn.close()
-    return jsonify(dados)
-
-# ===============================
-# PREVISÃO IA
-# ===============================
-@app.route("/previsao")
-def previsao():
-    conn = conectar()
+# =========================
+# INSERIR
+# =========================
+@app.route("/inserir", methods=["POST"])
+def inserir():
     try:
-        df = pd.read_sql("SELECT * FROM movimentacoes WHERE tipo='SAIDA'", conn)
-    except:
-        return jsonify({"erro":"sem dados"})
+        data = datetime.now().strftime("%Y-%m-%d")
 
-    if df.empty:
-        return jsonify({"msg":"sem histórico"})
+        ger = request.form["gerenciadora"].upper()
+        tipo = request.form["tipo"].upper()
+        item = request.form["item"].upper()
+        qtd = int(request.form["quantidade"])
 
-    media = df.groupby("produto")["quantidade"].mean()
+        if tipo not in ["ENTRADA", "SAIDA"]:
+            return "ERRO: tipo inválido"
 
-    previsao = {}
-    for p in media.index:
-        previsao[p] = round(media[p] * 6, 2)
+        conn = conectar()
+        cursor = conn.cursor()
 
-    return jsonify(previsao)
+        cursor.execute("""
+        INSERT INTO movimentacao (data, gerenciadora, tipo, item, quantidade)
+        VALUES (?, ?, ?, ?, ?)
+        """, (data, ger, tipo, item, qtd))
 
-# ===============================
-# EXCEL
-# ===============================
-@app.route("/excel")
-def excel():
-    conn = conectar()
-    df = pd.read_sql("SELECT * FROM movimentacoes", conn)
+        conn.commit()
+        conn.close()
 
-    arquivo = "relatorio.xlsx"
-    df.to_excel(arquivo, index=False)
+        return redirect("/")
 
-    return send_file(arquivo, as_attachment=True)
+    except Exception as e:
+        return f"Erro: {e}"
 
-# ===============================
-# START
-# ===============================
+
+# =========================
+# RUN
+# =========================
 if __name__ == "__main__":
-    criar_tabelas()
-    app.run(host="0.0.0.0", port=10000)
+    app.run(debug=True)
