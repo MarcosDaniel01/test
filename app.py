@@ -1,31 +1,39 @@
-from flask import Flask, render_template_string, request, redirect, session, send_file
+from flask import Flask, request, jsonify, render_template_string, redirect, session
 import psycopg2
 import os
+from datetime import datetime, timedelta
 import pandas as pd
-from datetime import datetime
 
 app = Flask(__name__)
-app.secret_key = "segredo123"
+app.secret_key = "segredo_empresa"
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# =========================
-# CONEXÃO
-# =========================
-def conectar():
-    return psycopg2.connect(DATABASE_URL)
+GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
 
-# =========================
+# ===============================
+# CONEXÃO SEGURA
+# ===============================
+def conectar():
+    try:
+        return psycopg2.connect(DATABASE_URL, sslmode='require')
+    except Exception as e:
+        print("ERRO DB:", e)
+        return None
+
+# ===============================
 # CRIAR TABELAS
-# =========================
+# ===============================
 def criar_tabelas():
     conn = conectar()
+    if not conn:
+        return
     cur = conn.cursor()
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS usuarios (
         id SERIAL PRIMARY KEY,
-        username TEXT UNIQUE,
+        usuario TEXT UNIQUE,
         senha TEXT,
         tipo TEXT
     )
@@ -33,8 +41,7 @@ def criar_tabelas():
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS estoque (
-        id SERIAL PRIMARY KEY,
-        produto TEXT UNIQUE,
+        produto TEXT PRIMARY KEY,
         quantidade INTEGER,
         gerenciadora TEXT
     )
@@ -50,63 +57,25 @@ def criar_tabelas():
     )
     """)
 
+    # cria admin padrão
+    cur.execute("SELECT * FROM usuarios WHERE usuario='ADMIN'")
+    if not cur.fetchone():
+        cur.execute("INSERT INTO usuarios VALUES (DEFAULT,'ADMIN','123','admin')")
+
     conn.commit()
-
-    try:
-        cur.execute("INSERT INTO usuarios (username, senha, tipo) VALUES ('ADMIN','123','admin')")
-        conn.commit()
-    except:
-        pass
-
+    cur.close()
     conn.close()
 
-criar_tabelas()
-
-# =========================
-# VALIDAÇÃO
-# =========================
+# ===============================
+# VALIDAÇÃO MAIÚSCULA
+# ===============================
 def validar_maiusculo(texto):
     return texto == texto.upper()
 
-# =========================
-# IA PREVISÃO AVANÇADA
-# =========================
-def previsao_inteligente(df_mov):
-    if df_mov.empty:
-        return "Sem dados ainda"
-
-    saidas = df_mov[df_mov["tipo"] == "saida"]
-
-    if saidas.empty:
-        return "Sem saídas registradas"
-
-    saidas["mes"] = pd.to_datetime(saidas["data"]).dt.to_period("M")
-
-    consumo_mensal = saidas.groupby(["produto","mes"])["quantidade"].sum().reset_index()
-
-    previsao_texto = ""
-
-    for produto in consumo_mensal["produto"].unique():
-        dados = consumo_mensal[consumo_mensal["produto"] == produto]
-
-        media = dados["quantidade"].mean()
-
-        # tendência simples
-        if len(dados) > 1:
-            tendencia = dados["quantidade"].iloc[-1] - dados["quantidade"].iloc[0]
-        else:
-            tendencia = 0
-
-        previsao_6m = int((media + (tendencia/len(dados))) * 6)
-
-        previsao_texto += f"<b>{produto}</b>: {previsao_6m} unidades<br>"
-
-    return previsao_texto
-
-# =========================
+# ===============================
 # LOGIN
-# =========================
-@app.route("/", methods=["GET","POST"])
+# ===============================
+@app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
         user = request.form["user"].upper()
@@ -114,160 +83,207 @@ def login():
 
         conn = conectar()
         cur = conn.cursor()
-        cur.execute("SELECT * FROM usuarios WHERE username=%s AND senha=%s", (user, senha))
-        usuario = cur.fetchone()
-        conn.close()
+        cur.execute("SELECT tipo FROM usuarios WHERE usuario=%s AND senha=%s",(user,senha))
+        res = cur.fetchone()
 
-        if usuario:
+        if res:
             session["user"] = user
-            session["tipo"] = usuario[3]
-            return redirect("/estoque")
+            session["tipo"] = res[0]
+            return redirect("/")
+
+        return "Login inválido"
 
     return """
-    <h2>🔐 Login</h2>
+    <h2>Login</h2>
     <form method="post">
-        Usuário: <input name="user"><br>
-        Senha: <input type="password" name="senha"><br>
-        <button>Entrar</button>
+    <input name="user" placeholder="USUARIO"><br>
+    <input name="senha" type="password"><br>
+    <button>Entrar</button>
     </form>
     """
 
-# =========================
-# ESTOQUE
-# =========================
-@app.route("/estoque", methods=["GET","POST"])
-def estoque():
+# ===============================
+# HOME
+# ===============================
+@app.route("/")
+def home():
     if "user" not in session:
-        return redirect("/")
+        return redirect("/login")
 
-    mensagem = ""
+    return render_template_string("""
+    <html>
+    <head>
+    <style>
+    body { background:#0f172a; color:white; font-family:Arial;}
+    .box { background:#1e293b; padding:20px; margin:20px; border-radius:10px;}
+    input, select { padding:10px; margin:5px;}
+    button { padding:10px; background:#22c55e; border:none;}
+    </style>
+    </head>
 
-    if request.method == "POST":
-        produto = request.form["produto"].upper()
-        quantidade = int(request.form["quantidade"])
-        tipo = request.form["tipo"]
-        gerenciadora = request.form["gerenciadora"].upper()
+    <body>
 
-        if not validar_maiusculo(produto):
-            mensagem = "❌ Apenas MAIÚSCULAS!"
-        else:
-            conn = conectar()
-            cur = conn.cursor()
+    <h1>🚀 Sistema Empresarial</h1>
 
-            cur.execute("SELECT quantidade FROM estoque WHERE produto=%s", (produto,))
-            resultado = cur.fetchone()
+    <div class="box">
+    <h2>Movimentação</h2>
+    <input id="produto" placeholder="PRODUTO">
+    <input id="qtd" type="number" placeholder="Quantidade">
 
-            if tipo == "entrada":
-                if resultado:
-                    cur.execute("UPDATE estoque SET quantidade = quantidade + %s WHERE produto=%s",
-                                (quantidade, produto))
-                else:
-                    cur.execute("INSERT INTO estoque VALUES (DEFAULT,%s,%s,%s)",
-                                (produto, quantidade, gerenciadora))
+    <select id="tipo">
+        <option>ENTRADA</option>
+        <option>SAIDA</option>
+    </select>
 
-            elif tipo == "saida":
-                if resultado and resultado[0] >= quantidade:
-                    cur.execute("UPDATE estoque SET quantidade = quantidade - %s WHERE produto=%s",
-                                (quantidade, produto))
-                else:
-                    mensagem = "❌ Estoque insuficiente!"
+    <select id="ger">
+        <option>PRIME</option>
+        <option>LINK</option>
+        <option>NEO</option>
+        <option>FITMOBY</option>
+        <option>OUTROS</option>
+    </select>
 
-            cur.execute("INSERT INTO movimentacoes (produto,tipo,quantidade) VALUES (%s,%s,%s)",
-                        (produto, tipo, quantidade))
+    <button onclick="mov()">Salvar</button>
+    </div>
 
-            conn.commit()
-            conn.close()
+    <div class="box">
+    <h2>Estoque (planilha)</h2>
+    <button onclick="carregar()">Atualizar</button>
+    <pre id="dados"></pre>
+    </div>
+
+    <div class="box">
+    <h2>Previsão 6 meses (IA)</h2>
+    <button onclick="previsao()">Gerar</button>
+    <pre id="prev"></pre>
+    </div>
+
+    <div class="box">
+    <h2>Relatório</h2>
+    <a href="/excel">Baixar Excel</a>
+    </div>
+
+    <script>
+    async function mov(){
+        await fetch('/mov', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({
+                produto:produto.value,
+                quantidade:qtd.value,
+                tipo:tipo.value,
+                gerenciadora:ger.value
+            })
+        })
+        alert("Salvo")
+    }
+
+    async function carregar(){
+        let r = await fetch('/estoque')
+        let d = await r.json()
+        dados.innerText = JSON.stringify(d,null,2)
+    }
+
+    async function previsao(){
+        let r = await fetch('/previsao')
+        let d = await r.json()
+        prev.innerText = JSON.stringify(d,null,2)
+    }
+    </script>
+
+    </body>
+    </html>
+    """)
+
+# ===============================
+# MOVIMENTAÇÃO (ENTRADA/SAIDA)
+# ===============================
+@app.route("/mov", methods=["POST"])
+def mov():
+    data = request.json
+
+    produto = data["produto"].upper()
+
+    if not validar_maiusculo(produto):
+        return "USE MAIÚSCULO"
+
+    qtd = int(data["quantidade"])
+    tipo = data["tipo"]
+    ger = data["gerenciadora"].upper()
 
     conn = conectar()
-    df = pd.read_sql("SELECT * FROM estoque ORDER BY gerenciadora, produto", conn)
-    mov = pd.read_sql("SELECT * FROM movimentacoes", conn)
+    cur = conn.cursor()
+
+    cur.execute("SELECT quantidade FROM estoque WHERE produto=%s",(produto,))
+    res = cur.fetchone()
+
+    if res:
+        nova_qtd = res[0] + qtd if tipo == "ENTRADA" else res[0] - qtd
+        cur.execute("UPDATE estoque SET quantidade=%s WHERE produto=%s",(nova_qtd,produto))
+    else:
+        cur.execute("INSERT INTO estoque VALUES (%s,%s,%s)",(produto,qtd,ger))
+
+    cur.execute("INSERT INTO movimentacoes (produto,tipo,quantidade) VALUES (%s,%s,%s)",
+                (produto,tipo,qtd))
+
+    conn.commit()
+    cur.close()
     conn.close()
 
-    alerta = df[df["quantidade"] < 5]
+    return "OK"
 
-    previsao = previsao_inteligente(mov)
+# ===============================
+# ESTOQUE
+# ===============================
+@app.route("/estoque")
+def estoque():
+    conn = conectar()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM estoque")
+    dados = cur.fetchall()
+    cur.close()
+    conn.close()
+    return jsonify(dados)
 
-    tabela = ""
-    for _, row in df.iterrows():
-        cor = "red" if row["quantidade"] < 5 else "green"
-        tabela += f"""
-        <tr>
-            <td>{row['produto']}</td>
-            <td>{row['quantidade']}</td>
-            <td>{row['gerenciadora']}</td>
-            <td style='color:{cor}'>●</td>
-        </tr>
-        """
+# ===============================
+# PREVISÃO IA (6 MESES)
+# ===============================
+@app.route("/previsao")
+def previsao():
+    conn = conectar()
 
-    return f"""
-    <style>
-    body {{ font-family: Arial; background:#f4f6f9; }}
-    .card {{ background:white; padding:20px; border-radius:10px; margin:10px; box-shadow:0 0 10px #ccc; }}
-    table {{ width:100%; border-collapse: collapse; }}
-    td,th {{ padding:10px; border-bottom:1px solid #ddd; }}
-    button {{ padding:10px; background:#007bff; color:white; border:none; }}
-    </style>
+    try:
+        df = pd.read_sql("SELECT * FROM movimentacoes WHERE tipo='SAIDA'", conn)
+    except:
+        return jsonify({"erro":"sem dados"})
 
-    <h2>📦 Sistema de Estoque</h2>
+    if df.empty:
+        return jsonify({"msg":"sem histórico"})
 
-    <div class="card">
-    <form method="post">
-        Produto: <input name="produto" required>
-        Quantidade: <input type="number" name="quantidade" required>
+    media = df.groupby("produto")["quantidade"].mean()
 
-        <select name="tipo">
-            <option value="entrada">Entrada</option>
-            <option value="saida">Saída</option>
-        </select>
+    previsao = {}
+    for p in media.index:
+        previsao[p] = round(media[p] * 6, 2)
 
-        <select name="gerenciadora">
-            <option value="VERDE">VERDE</option>
-            <option value="AZUL">AZUL</option>
-            <option value="OUTROS">OUTROS</option>
-        </select>
+    return jsonify(previsao)
 
-        <button>Salvar</button>
-    </form>
-    </div>
-
-    <div class="card">
-    <h3>⚠️ Estoque Baixo</h3>
-    {alerta.to_html(index=False)}
-    </div>
-
-    <div class="card">
-    <h3>🧠 Previsão Inteligente (6 meses)</h3>
-    {previsao}
-    </div>
-
-    <div class="card">
-    <h3>📋 Estoque</h3>
-    <table>
-        <tr><th>Produto</th><th>Quantidade</th><th>Gerenciadora</th><th>Status</th></tr>
-        {tabela}
-    </table>
-    </div>
-
-    <br>
-    <a href="/excel">📊 Exportar Excel</a>
-
-    <p>{mensagem}</p>
-    """
-
-# =========================
+# ===============================
 # EXCEL
-# =========================
+# ===============================
 @app.route("/excel")
 def excel():
     conn = conectar()
-    df = pd.read_sql("SELECT * FROM estoque", conn)
-    caminho = "estoque.xlsx"
-    df.to_excel(caminho, index=False)
-    conn.close()
-    return send_file(caminho, as_attachment=True)
+    df = pd.read_sql("SELECT * FROM movimentacoes", conn)
 
-# =========================
+    arquivo = "relatorio.xlsx"
+    df.to_excel(arquivo, index=False)
+
+    return open(arquivo,"rb").read()
+
+# ===============================
 # START
-# =========================
+# ===============================
 if __name__ == "__main__":
+    criar_tabelas()
     app.run(host="0.0.0.0", port=10000)
