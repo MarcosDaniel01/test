@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify, render_template_string, redirect, session, send_file
 import psycopg2
 import os
-from datetime import datetime, timedelta
 import pandas as pd
 import io
 
@@ -16,17 +15,13 @@ GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
 # CONEXÃO
 # ===============================
 def conectar():
-    try:
-        return psycopg2.connect(DATABASE_URL, sslmode='require')
-    except:
-        return None
+    return psycopg2.connect(DATABASE_URL, sslmode='require')
 
 # ===============================
 # CRIAR TABELAS
 # ===============================
 def criar_tabelas():
     conn = conectar()
-    if conn is None: return
     cur = conn.cursor()
 
     cur.execute("""
@@ -50,7 +45,6 @@ def criar_tabelas():
     """)
 
     conn.commit()
-    cur.close()
     conn.close()
 
 # ===============================
@@ -77,14 +71,14 @@ def login():
 
     return '''
     <form method="post">
-    <input name="usuario">
-    <input name="senha" type="password">
+    <input name="usuario" placeholder="usuario">
+    <input name="senha" type="password" placeholder="senha">
     <button>Entrar</button>
     </form>
     '''
 
 # ===============================
-# HOME
+# HOME (INTERFACE)
 # ===============================
 @app.route("/")
 def home():
@@ -98,12 +92,13 @@ def home():
     body{background:#0f172a;color:white;font-family:Arial;text-align:center}
     .card{background:#1e293b;margin:20px;padding:20px;border-radius:10px}
     input,select,button{padding:10px;margin:5px}
+    table{width:100%;background:white;color:black}
     </style>
     </head>
 
     <body>
 
-    <h1>📦 Estoque Inteligente</h1>
+    <h1>📦 ESTOQUE INTELIGENTE</h1>
 
     <div class="card">
         <h3>Movimentação</h3>
@@ -124,20 +119,14 @@ def home():
     </div>
 
     <div class="card">
-        <h3>📊 Estoque</h3>
+        <h3>📊 ESTOQUE</h3>
         <button onclick="carregar()">Atualizar</button>
         <div id="estoque"></div>
     </div>
 
     <div class="card">
-        <h3>📈 Previsão 6 meses</h3>
-        <button onclick="previsao()">Ver</button>
-        <pre id="prev"></pre>
-    </div>
-
-    <div class="card">
-        <h3>📥 Exportar</h3>
-        <a href="/exportar_excel"><button>Baixar Excel</button></a>
+        <h3>📥 Exportar Excel</h3>
+        <a href="/exportar_excel"><button>Baixar</button></a>
     </div>
 
 <script>
@@ -145,7 +134,7 @@ async function mov(){
     let produto = document.getElementById("produto").value
 
     if(produto !== produto.toUpperCase()){
-        alert("Use MAIÚSCULO")
+        alert("APENAS MAIÚSCULO")
         return
     }
 
@@ -160,19 +149,13 @@ async function mov(){
         })
     })
 
-    alert("OK")
+    alert("SALVO")
 }
 
 async function carregar(){
     let r = await fetch("/estoque_excel")
     let t = await r.text()
     document.getElementById("estoque").innerHTML = t
-}
-
-async function previsao(){
-    let r = await fetch("/previsao")
-    let t = await r.json()
-    document.getElementById("prev").innerText = JSON.stringify(t,null,2)
 }
 </script>
 
@@ -181,26 +164,26 @@ async function previsao(){
     """)
 
 # ===============================
-# MOVIMENTAÇÃO (SEM DUPLICAR)
+# MOVIMENTAÇÃO (INTELIGENTE)
 # ===============================
 @app.route("/mov", methods=["POST"])
 def mov():
     data = request.json
 
-    item = data["produto"]
-    if item != item.upper():
-        return "ERRO: use maiúsculo"
+    produto = data["produto"]
+    if produto != produto.upper():
+        return "ERRO: MAIÚSCULO"
 
     ger = data["ger"].upper()
 
     if ger not in GERENCIADORAS:
         return "Gerenciadora inválida"
 
-    # bloqueio (exceto OUTROS)
+    # bloquear nome da gerenciadora no item
     if ger != "OUTROS":
         for g in GERENCIADORAS:
-            if g in item:
-                return "Não usar nome da gerenciadora no item"
+            if g in produto:
+                return "Produto não pode conter gerenciadora"
 
     conn = conectar()
     cur = conn.cursor()
@@ -208,7 +191,7 @@ def mov():
     cur.execute("""
         INSERT INTO movimentacoes (produto,gerenciadora,tipo,quantidade)
         VALUES (%s,%s,%s,%s)
-    """,(item,ger,data["tipo"],int(data["qtd"])))
+    """,(produto,ger,data["tipo"],int(data["qtd"])))
 
     conn.commit()
     conn.close()
@@ -216,7 +199,7 @@ def mov():
     return "ok"
 
 # ===============================
-# ESTOQUE ORGANIZADO
+# ESTOQUE (PLANILHA COMPLETA)
 # ===============================
 @app.route("/estoque_excel")
 def estoque_excel():
@@ -228,7 +211,7 @@ def estoque_excel():
         SUM(CASE WHEN tipo='SAIDA' THEN quantidade ELSE 0 END) saida
         FROM movimentacoes
         GROUP BY produto, gerenciadora
-        ORDER BY gerenciadora
+        ORDER BY gerenciadora, produto
     """, conn)
 
     if df.empty:
@@ -236,40 +219,57 @@ def estoque_excel():
 
     df["saldo"] = df["entrada"] - df["saida"]
 
-    html = ""
-
-    for g in GERENCIADORAS:
-        sub = df[df["gerenciadora"] == g]
-        if not sub.empty:
-            html += f"<h2>{g}</h2>"
-            html += sub.to_html(index=False)
-
-    conn.close()
-    return html
-
-# ===============================
-# PREVISÃO IA (6 MESES)
-# ===============================
-@app.route("/previsao")
-def previsao():
-    conn = conectar()
-
-    df = pd.read_sql("""
-        SELECT produto, DATE_TRUNC('month', data) mes,
-        SUM(quantidade) as total
+    # PREVISÃO
+    df_saida = pd.read_sql("""
+        SELECT produto,
+        DATE_TRUNC('month', data) mes,
+        SUM(quantidade) total
         FROM movimentacoes
         WHERE tipo='SAIDA'
         GROUP BY produto, mes
     """, conn)
 
-    resultado = {}
+    previsao = {}
+    for p in df_saida["produto"].unique():
+        media = df_saida[df_saida["produto"]==p]["total"].mean()
+        previsao[p] = round(media * 6)
 
-    for p in df["produto"].unique():
-        media = df[df["produto"]==p]["total"].mean()
-        resultado[p] = round(media * 6)
+    df["previsao_6m"] = df["produto"].map(previsao).fillna(0)
 
+    df["status"] = df.apply(lambda r: "⚠️ BAIXO" if r["saldo"] <= r["previsao_6m"] else "✅ OK", axis=1)
+
+    html = """
+    <h2>📊 ESTOQUE GERAL</h2>
+    <table border="1">
+    <tr>
+    <th>GERENCIADORA</th>
+    <th>PRODUTO</th>
+    <th>ENTRADA</th>
+    <th>SAIDA</th>
+    <th>SALDO</th>
+    <th>PREVISÃO 6M</th>
+    <th>STATUS</th>
+    </tr>
+    """
+
+    for g in GERENCIADORAS:
+        sub = df[df["gerenciadora"] == g]
+        for _, r in sub.iterrows():
+            html += f"""
+            <tr>
+            <td><b>{g}</b></td>
+            <td>{r['produto']}</td>
+            <td>{r['entrada']}</td>
+            <td>{r['saida']}</td>
+            <td>{r['saldo']}</td>
+            <td>{r['previsao_6m']}</td>
+            <td>{r['status']}</td>
+            </tr>
+            """
+
+    html += "</table>"
     conn.close()
-    return jsonify(resultado)
+    return html
 
 # ===============================
 # EXPORTAR EXCEL
