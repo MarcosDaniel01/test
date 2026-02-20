@@ -1,7 +1,6 @@
-from flask import Flask, request, jsonify, render_template_string, redirect, session
+from flask import Flask, request, jsonify, render_template_string, redirect, session, send_file
 import psycopg2
 import os
-from datetime import datetime, timedelta
 import pandas as pd
 
 app = Flask(__name__)
@@ -12,22 +11,16 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
 
 # ===============================
-# CONEXÃO SEGURA
+# CONEXÃO
 # ===============================
 def conectar():
-    try:
-        return psycopg2.connect(DATABASE_URL, sslmode='require')
-    except Exception as e:
-        print("ERRO DB:", e)
-        return None
+    return psycopg2.connect(DATABASE_URL, sslmode='require')
 
 # ===============================
 # CRIAR TABELAS
 # ===============================
 def criar_tabelas():
     conn = conectar()
-    if not conn:
-        return
     cur = conn.cursor()
 
     cur.execute("""
@@ -57,7 +50,6 @@ def criar_tabelas():
     )
     """)
 
-    # cria admin padrão
     cur.execute("SELECT * FROM usuarios WHERE usuario='ADMIN'")
     if not cur.fetchone():
         cur.execute("INSERT INTO usuarios VALUES (DEFAULT,'ADMIN','123','admin')")
@@ -118,16 +110,18 @@ def home():
     .box { background:#1e293b; padding:20px; margin:20px; border-radius:10px;}
     input, select { padding:10px; margin:5px;}
     button { padding:10px; background:#22c55e; border:none;}
+    table { width:100%; margin-top:10px; border-collapse:collapse;}
+    th, td { padding:10px; border:1px solid white;}
     </style>
     </head>
 
     <body>
 
-    <h1>🚀 Sistema Empresarial</h1>
+    <h1>🚀 Sistema de Estoque Empresarial</h1>
 
     <div class="box">
     <h2>Movimentação</h2>
-    <input id="produto" placeholder="PRODUTO">
+    <input id="produto" placeholder="PRODUTO (MAIÚSCULO)">
     <input id="qtd" type="number" placeholder="Quantidade">
 
     <select id="tipo">
@@ -147,13 +141,20 @@ def home():
     </div>
 
     <div class="box">
-    <h2>Estoque (planilha)</h2>
+    <h2>Estoque (Planilha)</h2>
     <button onclick="carregar()">Atualizar</button>
-    <pre id="dados"></pre>
+
+    <table id="tabela">
+        <tr>
+            <th>Produto</th>
+            <th>Quantidade</th>
+            <th>Gerenciadora</th>
+        </tr>
+    </table>
     </div>
 
     <div class="box">
-    <h2>Previsão 6 meses (IA)</h2>
+    <h2>Previsão IA (6 meses)</h2>
     <button onclick="previsao()">Gerar</button>
     <pre id="prev"></pre>
     </div>
@@ -165,7 +166,7 @@ def home():
 
     <script>
     async function mov(){
-        await fetch('/mov', {
+        let res = await fetch('/mov', {
             method:'POST',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({
@@ -175,13 +176,39 @@ def home():
                 gerenciadora:ger.value
             })
         })
-        alert("Salvo")
+
+        let r = await res.json()
+
+        if(r.erro){
+            alert(r.erro)
+        }else{
+            alert("Salvo com sucesso")
+            carregar()
+        }
     }
 
     async function carregar(){
         let r = await fetch('/estoque')
         let d = await r.json()
-        dados.innerText = JSON.stringify(d,null,2)
+
+        let tabela = document.getElementById("tabela")
+        tabela.innerHTML = `
+        <tr>
+            <th>Produto</th>
+            <th>Quantidade</th>
+            <th>Gerenciadora</th>
+        </tr>`
+
+        d.forEach(item=>{
+            let alerta = item[1] < 5 ? "style='color:red'" : ""
+
+            tabela.innerHTML += `
+            <tr ${alerta}>
+                <td>${item[0]}</td>
+                <td>${item[1]}</td>
+                <td>${item[2]}</td>
+            </tr>`
+        })
     }
 
     async function previsao(){
@@ -189,6 +216,8 @@ def home():
         let d = await r.json()
         prev.innerText = JSON.stringify(d,null,2)
     }
+
+    carregar()
     </script>
 
     </body>
@@ -196,20 +225,20 @@ def home():
     """)
 
 # ===============================
-# MOVIMENTAÇÃO (ENTRADA/SAIDA)
+# MOVIMENTAÇÃO
 # ===============================
 @app.route("/mov", methods=["POST"])
 def mov():
     data = request.json
 
-    produto = data["produto"].upper()
+    produto = data["produto"]
 
     if not validar_maiusculo(produto):
-        return "USE MAIÚSCULO"
+        return jsonify({"erro": "DIGITE EM MAIÚSCULO"}), 400
 
     qtd = int(data["quantidade"])
     tipo = data["tipo"]
-    ger = data["gerenciadora"].upper()
+    ger = data["gerenciadora"]
 
     conn = conectar()
     cur = conn.cursor()
@@ -218,19 +247,37 @@ def mov():
     res = cur.fetchone()
 
     if res:
-        nova_qtd = res[0] + qtd if tipo == "ENTRADA" else res[0] - qtd
-        cur.execute("UPDATE estoque SET quantidade=%s WHERE produto=%s",(nova_qtd,produto))
-    else:
-        cur.execute("INSERT INTO estoque VALUES (%s,%s,%s)",(produto,qtd,ger))
+        atual = res[0]
 
-    cur.execute("INSERT INTO movimentacoes (produto,tipo,quantidade) VALUES (%s,%s,%s)",
-                (produto,tipo,qtd))
+        if tipo == "SAIDA" and atual < qtd:
+            return jsonify({"erro": "ESTOQUE INSUFICIENTE"}), 400
+
+        nova = atual + qtd if tipo == "ENTRADA" else atual - qtd
+
+        cur.execute("""
+            UPDATE estoque SET quantidade=%s, gerenciadora=%s
+            WHERE produto=%s
+        """,(nova, ger, produto))
+
+    else:
+        if tipo == "SAIDA":
+            return jsonify({"erro": "PRODUTO NÃO EXISTE"}), 400
+
+        cur.execute("""
+            INSERT INTO estoque (produto, quantidade, gerenciadora)
+            VALUES (%s,%s,%s)
+        """,(produto, qtd, ger))
+
+    cur.execute("""
+        INSERT INTO movimentacoes (produto,tipo,quantidade)
+        VALUES (%s,%s,%s)
+    """,(produto, tipo, qtd))
 
     conn.commit()
     cur.close()
     conn.close()
 
-    return "OK"
+    return jsonify({"msg":"OK"})
 
 # ===============================
 # ESTOQUE
@@ -239,19 +286,18 @@ def mov():
 def estoque():
     conn = conectar()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM estoque")
+    cur.execute("SELECT * FROM estoque ORDER BY produto")
     dados = cur.fetchall()
     cur.close()
     conn.close()
     return jsonify(dados)
 
 # ===============================
-# PREVISÃO IA (6 MESES)
+# PREVISÃO IA
 # ===============================
 @app.route("/previsao")
 def previsao():
     conn = conectar()
-
     try:
         df = pd.read_sql("SELECT * FROM movimentacoes WHERE tipo='SAIDA'", conn)
     except:
@@ -279,7 +325,7 @@ def excel():
     arquivo = "relatorio.xlsx"
     df.to_excel(arquivo, index=False)
 
-    return open(arquivo,"rb").read()
+    return send_file(arquivo, as_attachment=True)
 
 # ===============================
 # START
