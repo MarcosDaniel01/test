@@ -1,8 +1,7 @@
-from flask import Flask, request, jsonify, render_template_string, redirect
+from flask import Flask, request, jsonify, render_template_string
 import psycopg2
 import os
 from datetime import datetime, timedelta
-import pandas as pd
 
 app = Flask(__name__)
 
@@ -20,15 +19,6 @@ def conectar():
 def criar_tabelas():
     conn = conectar()
     cur = conn.cursor()
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS usuarios (
-        id SERIAL PRIMARY KEY,
-        usuario TEXT UNIQUE,
-        senha TEXT,
-        tipo TEXT
-    )
-    """)
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS estoque (
@@ -63,18 +53,21 @@ def home():
     return render_template_string("""
     <html>
     <head>
-        <title>Sistema de Estoque</title>
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <title>Estoque Inteligente</title>
         <style>
             body { font-family: Arial; background:#0f172a; color:white; text-align:center;}
-            .card { background:#1e293b; padding:20px; margin:20px; border-radius:10px;}
+            table { width:80%; margin:auto; border-collapse:collapse;}
+            th, td { padding:10px; border:1px solid #334155;}
+            th { background:#1e293b;}
+            tr:nth-child(even){background:#1e293b;}
             input, select, button { padding:10px; margin:5px; border-radius:5px;}
             button { background:#22c55e; color:white; border:none;}
+            .card { background:#1e293b; padding:20px; margin:20px; border-radius:10px;}
         </style>
     </head>
     <body>
 
-    <h1>🚀 Sistema de Estoque</h1>
+    <h1>📦 Sistema de Estoque Inteligente</h1>
 
     <div class="card">
         <h2>Adicionar Produto</h2>
@@ -98,14 +91,25 @@ def home():
     </div>
 
     <div class="card">
-        <h2>Estoque</h2>
+        <h2>📊 Estoque</h2>
         <button onclick="carregar()">Atualizar</button>
-        <pre id="estoque"></pre>
+        <table id="tabela">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Produto</th>
+                    <th>Quantidade</th>
+                    <th>Gerenciadora</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
     </div>
 
     <div class="card">
-        <h2>Dashboard</h2>
-        <canvas id="grafico"></canvas>
+        <h2>🧠 Previsão (6 meses)</h2>
+        <button onclick="previsao()">Calcular</button>
+        <pre id="previsao"></pre>
     </div>
 
     <script>
@@ -120,6 +124,7 @@ def home():
             })
         })
         alert("Adicionado")
+        carregar()
     }
 
     async function saida(){
@@ -132,31 +137,34 @@ def home():
             })
         })
         alert("Saída registrada")
+        carregar()
     }
 
     async function carregar(){
         let res = await fetch('/estoque')
         let data = await res.json()
-        document.getElementById('estoque').innerText = JSON.stringify(data,null,2)
-    }
 
-    async function dashboard(){
-        let res = await fetch('/dashboard')
-        let data = await res.json()
+        let tbody = document.querySelector("#tabela tbody")
+        tbody.innerHTML = ""
 
-        new Chart(document.getElementById('grafico'),{
-            type:'bar',
-            data:{
-                labels:data.map(x=>x[0]),
-                datasets:[{
-                    label:'Quantidade',
-                    data:data.map(x=>x[1])
-                }]
-            }
+        data.forEach(item=>{
+            tbody.innerHTML += `
+            <tr>
+                <td>${item[0]}</td>
+                <td>${item[1]}</td>
+                <td>${item[2]}</td>
+                <td>${item[3]}</td>
+            </tr>`
         })
     }
 
-    dashboard()
+    async function previsao(){
+        let res = await fetch('/previsao')
+        let data = await res.json()
+        document.getElementById('previsao').innerText = JSON.stringify(data,null,2)
+    }
+
+    carregar()
     </script>
 
     </body>
@@ -193,7 +201,7 @@ def adicionar():
     return jsonify({"msg":"ok"})
 
 # ===============================
-# SAIDA
+# SAÍDA
 # ===============================
 @app.route("/saida", methods=["POST"])
 def saida():
@@ -225,7 +233,7 @@ def estoque():
     conn = conectar()
     cur = conn.cursor()
 
-    cur.execute("SELECT * FROM estoque")
+    cur.execute("SELECT * FROM estoque ORDER BY id DESC")
     dados = cur.fetchall()
 
     cur.close()
@@ -234,24 +242,48 @@ def estoque():
     return jsonify(dados)
 
 # ===============================
-# DASHBOARD
+# PREVISÃO IA (6 MESES)
 # ===============================
-@app.route("/dashboard")
-def dash():
+@app.route("/previsao")
+def previsao():
     conn = conectar()
     cur = conn.cursor()
 
-    cur.execute("SELECT gerenciadora, SUM(quantidade) FROM estoque GROUP BY gerenciadora")
+    seis_meses = datetime.now() - timedelta(days=180)
+
+    cur.execute("""
+        SELECT produto, SUM(quantidade)
+        FROM movimentacoes
+        WHERE tipo='SAIDA' AND data >= %s
+        GROUP BY produto
+    """, (seis_meses,))
+
     dados = cur.fetchall()
+
+    resultado = []
+    for produto, total in dados:
+        media_mensal = total / 6
+        previsao = media_mensal * 6
+
+        resultado.append({
+            "produto": produto,
+            "media_mensal": round(media_mensal, 2),
+            "previsao_6_meses": round(previsao, 2)
+        })
 
     cur.close()
     conn.close()
 
-    return jsonify(dados)
+    return jsonify(resultado)
 
 # ===============================
 # START
 # ===============================
 if __name__ == "__main__":
-    criar_tabelas()
+    try:
+        criar_tabelas()
+        print("✅ Banco conectado")
+    except Exception as e:
+        print("❌ Erro banco:", e)
+
     app.run(host="0.0.0.0", port=10000)
