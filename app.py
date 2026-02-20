@@ -1,18 +1,22 @@
-from flask import Flask, request, render_template_string, redirect, session, send_file
+from flask import Flask, request, jsonify
 import psycopg2
-import pandas as pd
 import os
 from datetime import datetime, timedelta
-import io
+import pandas as pd
 
 app = Flask(__name__)
-app.secret_key = "123456"
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# ===============================
+# CONEXÃO
+# ===============================
 def conectar():
     return psycopg2.connect(DATABASE_URL)
 
+# ===============================
+# CRIAR TABELAS
+# ===============================
 def criar_tabelas():
     conn = conectar()
     cur = conn.cursor()
@@ -27,9 +31,12 @@ def criar_tabelas():
     """)
 
     cur.execute("""
-    INSERT INTO usuarios (usuario, senha, tipo)
-    VALUES ('admin','123','admin')
-    ON CONFLICT (usuario) DO NOTHING
+    CREATE TABLE IF NOT EXISTS estoque (
+        id SERIAL PRIMARY KEY,
+        produto TEXT,
+        quantidade INTEGER,
+        gerenciadora TEXT
+    )
     """)
 
     cur.execute("""
@@ -37,192 +44,230 @@ def criar_tabelas():
         id SERIAL PRIMARY KEY,
         produto TEXT,
         tipo TEXT,
-        operacao TEXT,
         quantidade INTEGER,
         data TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
 
     conn.commit()
+    cur.close()
     conn.close()
 
-# ===================== HTML =====================
+# ===============================
+# CONFIG
+# ===============================
+GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
 
-HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-<title>Estoque SaaS</title>
-<style>
-body {font-family: Arial; background:#eef1f5;}
-.container {width:90%; margin:auto;}
-.card {background:white; padding:20px; margin:10px; border-radius:12px; box-shadow:0 2px 5px rgba(0,0,0,0.1);}
-button {padding:10px; border:none; background:#4CAF50; color:white; border-radius:6px; cursor:pointer;}
-input, select {padding:8px; margin:5px;}
-.top {display:flex; justify-content:space-between; align-items:center;}
-.logout {background:red;}
-</style>
-</head>
-<body>
+def validar_maiusculo(texto):
+    return texto.isupper()
 
-<div class="container">
-
-<div class="top">
-<h2>📦 Sistema de Estoque</h2>
-<a href="/logout"><button class="logout">Sair</button></a>
-</div>
-
-<div class="card">
-<form method="post" action="/mov">
-Produto: <input name="produto" required>
-Tipo:
-<select name="tipo">
-<option>Prime</option>
-<option>Link</option>
-<option>Neo</option>
-<option>Fitmoby</option>
-</select>
-Quantidade: <input name="quantidade" type="number" required>
-
-<button name="operacao" value="entrada">Entrada</button>
-<button name="operacao" value="saida">Saída</button>
-</form>
-</div>
-
-<div class="card">
-<h3>📊 Estoque Atual</h3>
-{{tabela|safe}}
-</div>
-
-<div class="card">
-<h3>🧠 Previsão Inteligente</h3>
-{{previsao|safe}}
-</div>
-
-<div class="card">
-<h3>🔔 Alertas</h3>
-{{alertas|safe}}
-</div>
-
-<div class="card">
-<a href="/excel"><button>📥 Exportar Excel</button></a>
-</div>
-
-</div>
-
-</body>
-</html>
-"""
-
-LOGIN = """
-<h2>🔐 Login</h2>
-<form method="post">
-Usuário: <input name="usuario"><br><br>
-Senha: <input type="password" name="senha"><br><br>
-<button>Entrar</button>
-</form>
-"""
-
-# ===================== ROTAS =====================
-
-@app.route("/", methods=["GET","POST"])
+# ===============================
+# LOGIN
+# ===============================
+@app.route("/login", methods=["POST"])
 def login():
-    if request.method == "POST":
-        u = request.form["usuario"]
-        s = request.form["senha"]
-
-        conn = conectar()
-        df = pd.read_sql("SELECT * FROM usuarios", conn)
-
-        user = df[(df.usuario==u) & (df.senha==s)]
-
-        if not user.empty:
-            session["user"] = u
-            return redirect("/sistema")
-
-    return render_template_string(LOGIN)
-
-@app.route("/logout")
-def logout():
-    session.clear()
-    return redirect("/")
-
-@app.route("/sistema")
-def sistema():
-    if "user" not in session:
-        return redirect("/")
+    data = request.json
+    usuario = data["usuario"]
+    senha = data["senha"]
 
     conn = conectar()
-    df = pd.read_sql("SELECT * FROM movimentacoes", conn)
+    cur = conn.cursor()
 
-    if df.empty:
-        return render_template_string(HTML, tabela="Sem dados", previsao="", alertas="")
+    cur.execute("SELECT tipo FROM usuarios WHERE usuario=%s AND senha=%s", (usuario, senha))
+    res = cur.fetchone()
 
-    # cálculo estoque
-    df["q"] = df.apply(lambda x: x["quantidade"] if x["operacao"]=="entrada" else -x["quantidade"], axis=1)
-    estoque = df.groupby(["produto","tipo"])["q"].sum().reset_index()
-    tabela = estoque.to_html(index=False)
+    cur.close()
+    conn.close()
 
-    # previsão IA
-    df["data"] = pd.to_datetime(df["data"])
-    limite = datetime.now() - timedelta(days=90)
-    df2 = df[df["data"] >= limite]
+    if res:
+        return jsonify({"status": "ok", "tipo": res[0]})
+    else:
+        return jsonify({"erro": "Login inválido"}), 401
 
-    lista_prev = []
-    lista_alerta = []
+# ===============================
+# CRIAR USUÁRIO
+# ===============================
+@app.route("/criar_usuario", methods=["POST"])
+def criar_usuario():
+    data = request.json
 
-    for p in df2["produto"].unique():
-        d = df2[df2["produto"]==p]
-        saida = d[d["operacao"]=="saida"]["quantidade"].sum()
-        dias = (datetime.now() - d["data"].min()).days or 1
-        media = saida/dias if dias else 0
-        total = d["q"].sum()
-        dias_rest = int(total/media) if media>0 else 999
-
-        status = "🔴 CRÍTICO" if dias_rest < 7 else "🟢 OK"
-
-        lista_prev.append(f"{p} → {dias_rest} dias ({status})<br>")
-
-        if total < 10:
-            lista_alerta.append(f"⚠ Estoque baixo: {p} ({total})<br>")
-
-    previsao_html = "".join(lista_prev)
-    alertas_html = "".join(lista_alerta)
-
-    return render_template_string(HTML, tabela=tabela, previsao=previsao_html, alertas=alertas_html)
-
-@app.route("/mov", methods=["POST"])
-def mov():
-    if "user" not in session:
-        return redirect("/")
-
-    data = request.form
     conn = conectar()
     cur = conn.cursor()
 
     cur.execute("""
-    INSERT INTO movimentacoes (produto, tipo, operacao, quantidade)
-    VALUES (%s,%s,%s,%s)
-    """,(data["produto"], data["tipo"], data["operacao"], data["quantidade"]))
+        INSERT INTO usuarios (usuario, senha, tipo)
+        VALUES (%s, %s, %s)
+    """, (data["usuario"], data["senha"], data["tipo"]))
 
     conn.commit()
+    cur.close()
     conn.close()
 
-    return redirect("/sistema")
+    return jsonify({"msg": "Usuário criado"})
 
-@app.route("/excel")
-def excel():
+# ===============================
+# ADICIONAR PRODUTO
+# ===============================
+@app.route("/adicionar", methods=["POST"])
+def adicionar():
+    data = request.json
+
+    produto = data["produto"].upper()
+    quantidade = int(data["quantidade"])
+    gerenciadora = data["gerenciadora"].upper()
+
+    if not validar_maiusculo(produto):
+        return jsonify({"erro": "Use letras maiúsculas"}), 400
+
+    if gerenciadora not in GERENCIADORAS:
+        return jsonify({"erro": "Gerenciadora inválida"}), 400
+
+    conn = conectar()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO estoque (produto, quantidade, gerenciadora)
+        VALUES (%s, %s, %s)
+    """, (produto, quantidade, gerenciadora))
+
+    cur.execute("""
+        INSERT INTO movimentacoes (produto, tipo, quantidade)
+        VALUES (%s, 'ENTRADA', %s)
+    """, (produto, quantidade))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return jsonify({"msg": "Adicionado"})
+
+# ===============================
+# SAÍDA DE PRODUTO
+# ===============================
+@app.route("/saida", methods=["POST"])
+def saida():
+    data = request.json
+
+    produto = data["produto"].upper()
+    quantidade = int(data["quantidade"])
+
+    conn = conectar()
+    cur = conn.cursor()
+
+    cur.execute("""
+        UPDATE estoque SET quantidade = quantidade - %s
+        WHERE produto = %s
+    """, (quantidade, produto))
+
+    cur.execute("""
+        INSERT INTO movimentacoes (produto, tipo, quantidade)
+        VALUES (%s, 'SAIDA', %s)
+    """, (produto, quantidade))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return jsonify({"msg": "Saída registrada"})
+
+# ===============================
+# LISTAR ESTOQUE
+# ===============================
+@app.route("/estoque", methods=["GET"])
+def estoque():
+    conn = conectar()
+    cur = conn.cursor()
+
+    cur.execute("SELECT * FROM estoque")
+    dados = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return jsonify(dados)
+
+# ===============================
+# ALERTA ESTOQUE BAIXO
+# ===============================
+@app.route("/alerta", methods=["GET"])
+def alerta():
+    conn = conectar()
+    cur = conn.cursor()
+
+    cur.execute("SELECT produto, quantidade FROM estoque WHERE quantidade < 5")
+    dados = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return jsonify(dados)
+
+# ===============================
+# DASHBOARD
+# ===============================
+@app.route("/dashboard", methods=["GET"])
+def dashboard():
+    conn = conectar()
+    cur = conn.cursor()
+
+    cur.execute("SELECT gerenciadora, SUM(quantidade) FROM estoque GROUP BY gerenciadora")
+    dados = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return jsonify(dados)
+
+# ===============================
+# RELATÓRIO EXCEL
+# ===============================
+@app.route("/relatorio", methods=["GET"])
+def relatorio():
     conn = conectar()
     df = pd.read_sql("SELECT * FROM movimentacoes", conn)
 
-    output = io.BytesIO()
-    df.to_excel(output, index=False)
-    output.seek(0)
+    caminho = "relatorio.xlsx"
+    df.to_excel(caminho, index=False)
 
-    return send_file(output, download_name="relatorio.xlsx", as_attachment=True)
+    conn.close()
 
-# ===================== START =====================
+    return jsonify({"msg": "Relatório gerado", "arquivo": caminho})
 
+# ===============================
+# PREVISÃO SIMPLES (IA)
+# ===============================
+@app.route("/previsao", methods=["GET"])
+def previsao():
+    conn = conectar()
+    cur = conn.cursor()
+
+    seis_meses = datetime.now() - timedelta(days=180)
+
+    cur.execute("""
+        SELECT produto, SUM(quantidade)
+        FROM movimentacoes
+        WHERE tipo='SAIDA' AND data >= %s
+        GROUP BY produto
+    """, (seis_meses,))
+
+    dados = cur.fetchall()
+
+    previsoes = []
+    for produto, total in dados:
+        media_mensal = total / 6
+        previsoes.append({
+            "produto": produto,
+            "media_mensal": round(media_mensal, 2)
+        })
+
+    cur.close()
+    conn.close()
+
+    return jsonify(previsoes)
+
+# ===============================
+# START
+# ===============================
 if __name__ == "__main__":
     criar_tabelas()
     app.run(host="0.0.0.0", port=10000)
