@@ -6,7 +6,7 @@ import pandas as pd
 import io
 
 app = Flask(__name__)
-app.secret_key = "empresa_top"
+app.secret_key = "empresa_estoque"
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -19,7 +19,7 @@ def conectar():
     try:
         return psycopg2.connect(DATABASE_URL, sslmode='require')
     except Exception as e:
-        print("ERRO DB:", e)
+        print("Erro conexão:", e)
         return None
 
 # ===============================
@@ -41,7 +41,8 @@ def criar_tabelas():
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS estoque (
-        produto TEXT PRIMARY KEY,
+        id SERIAL PRIMARY KEY,
+        produto TEXT UNIQUE,
         quantidade INTEGER,
         gerenciadora TEXT
     )
@@ -74,13 +75,15 @@ def login():
         cur = conn.cursor()
         cur.execute("SELECT * FROM usuarios WHERE usuario=%s AND senha=%s",(user,senha))
         u = cur.fetchone()
+        cur.close()
+        conn.close()
 
         if u:
             session["user"] = user
             return redirect("/home")
 
     return """
-    <h2>Login</h2>
+    <h2>🔐 Login</h2>
     <form method="post">
     <input name="user" placeholder="Usuário"><br>
     <input name="senha" type="password"><br>
@@ -104,17 +107,17 @@ def home():
         tipo = request.form["tipo"]
         ger = request.form["ger"]
 
-        # 🔠 BLOQUEIO MAIUSCULO
+        # BLOQUEIO MAIUSCULO
         if item != item.upper():
-            msg = "ERRO: SOMENTE MAIÚSCULO"
+            msg = "❌ Use apenas letras MAIÚSCULAS"
 
-        # 🚫 BLOQUEIO GERENCIADORA NO NOME
-        elif ger != "OUTROS":
+        # BLOQUEIO GERENCIADORA
+        if ger != "OUTROS":
             for g in GERENCIADORAS:
                 if g in item:
-                    msg = f"ERRO: NÃO USAR {g} NO NOME"
+                    msg = f"❌ Não usar {g} no nome"
 
-        else:
+        if msg == "":
             conn = conectar()
             cur = conn.cursor()
 
@@ -123,61 +126,27 @@ def home():
 
             if existe:
                 if tipo == "ENTRADA":
-                    cur.execute("UPDATE estoque SET quantidade = quantidade + %s WHERE produto=%s",(qtd,item))
+                    cur.execute("UPDATE estoque SET quantidade=quantidade+%s WHERE produto=%s",(qtd,item))
                 else:
-                    cur.execute("UPDATE estoque SET quantidade = quantidade - %s WHERE produto=%s",(qtd,item))
+                    cur.execute("UPDATE estoque SET quantidade=quantidade-%s WHERE produto=%s",(qtd,item))
             else:
                 if tipo == "ENTRADA":
-                    cur.execute("INSERT INTO estoque VALUES (%s,%s,%s)",(item,qtd,ger))
+                    cur.execute("INSERT INTO estoque VALUES (DEFAULT,%s,%s,%s)",(item,qtd,ger))
 
-            cur.execute("INSERT INTO movimentacoes (produto,tipo,quantidade) VALUES (%s,%s,%s)",
-                        (item,tipo,qtd))
+            cur.execute("INSERT INTO movimentacoes VALUES (DEFAULT,%s,%s,%s,DEFAULT)",(item,tipo,qtd))
 
             conn.commit()
             cur.close()
             conn.close()
 
-    return """
-    <h2>🚀 Sistema Profissional</h2>
-
-    <form method="post">
-    Item: <input name="item"><br>
-    Qtd: <input name="qtd" type="number"><br>
-
-    Tipo:
-    <select name="tipo">
-        <option>ENTRADA</option>
-        <option>SAIDA</option>
-    </select><br>
-
-    Gerenciadora:
-    <select name="ger">
-        <option>PRIME</option>
-        <option>LINK</option>
-        <option>NEO</option>
-        <option>FITMOBY</option>
-        <option>OUTROS</option>
-    </select><br><br>
-
-    <button>Salvar</button>
-    </form>
-
-    <br>
-    <a href="/excel">📊 BAIXAR PLANILHA PROFISSIONAL</a>
-    """
-
-# ===============================
-# EXCEL PROFISSIONAL
-# ===============================
-@app.route("/excel")
-def excel():
-
+    # ===============================
+    # DADOS
+    # ===============================
     conn = conectar()
     df = pd.read_sql("SELECT * FROM estoque", conn)
     mov = pd.read_sql("SELECT * FROM movimentacoes", conn)
 
     hoje = datetime.now()
-    inicio_mes = hoje.replace(day=1)
     seis_meses = hoje - timedelta(days=180)
 
     output = io.BytesIO()
@@ -194,48 +163,74 @@ def excel():
             tabela = []
 
             for _, row in grupo.iterrows():
-
                 produto = row["produto"]
 
-                entrada_mes = mov[
-                    (mov["produto"] == produto) &
-                    (mov["tipo"] == "ENTRADA") &
-                    (mov["data"] >= inicio_mes)
-                ]["quantidade"].sum()
+                entradas = mov[(mov["produto"]==produto)&(mov["tipo"]=="ENTRADA")]["quantidade"].sum()
+                saidas = mov[(mov["produto"]==produto)&(mov["tipo"]=="SAIDA")]["quantidade"].sum()
 
-                saida_mes = mov[
-                    (mov["produto"] == produto) &
-                    (mov["tipo"] == "SAIDA") &
-                    (mov["data"] >= inicio_mes)
-                ]["quantidade"].sum()
+                ult6 = mov[(mov["produto"]==produto)&(mov["tipo"]=="SAIDA")&(mov["data"]>=seis_meses)]
+                total6 = ult6["quantidade"].sum()
 
-                saida_6m = mov[
-                    (mov["produto"] == produto) &
-                    (mov["tipo"] == "SAIDA") &
-                    (mov["data"] >= seis_meses)
-                ]["quantidade"].sum()
+                media_mensal = total6 / 6 if total6 else 0
 
-                media = saida_6m / 6 if saida_6m else 0
-                previsao = int(media * 6 * 1.2)
+                previsao = int((media_mensal * 6) * 1.2)
 
                 tabela.append({
                     "ITEM": produto,
-                    "ENTRADA_MES": entrada_mes,
-                    "SAIDA_MES": saida_mes,
-                    "SAIDA_6_MESES": saida_6m,
-                    "SALDO": row["quantidade"],
-                    "PREVISAO_6M+20%": previsao
+                    "ENTRADA_TOTAL": entradas,
+                    "SAIDA_TOTAL": saidas,
+                    "SAIDA_MENSAL_MEDIA": round(media_mensal,2),
+                    "SAIDA_ULT_6_MESES": total6,
+                    "PREVISAO_PROX_6_MESES(+20%)": previsao,
+                    "SALDO": row["quantidade"]
                 })
 
-            df_final = pd.DataFrame(tabela)
-
-            df_final.to_excel(writer, sheet_name=g, index=False)
+            pd.DataFrame(tabela).to_excel(writer, sheet_name=g, index=False)
 
     conn.close()
 
-    output.seek(0)
+    alerta = df[df["quantidade"] < 5]
 
-    return send_file(output, download_name="relatorio_profissional.xlsx", as_attachment=True)
+    return f"""
+    <h2>🚀 Sistema Profissional de Estoque</h2>
+
+    <p style='color:red;'>{msg}</p>
+
+    <form method="post">
+    <b>Item:</b><br><input name="item"><br>
+    <b>Quantidade:</b><br><input name="qtd" type="number"><br>
+
+    <b>Tipo:</b><br>
+    <select name="tipo">
+        <option>ENTRADA</option>
+        <option>SAIDA</option>
+    </select><br>
+
+    <b>Gerenciadora:</b><br>
+    <select name="ger">
+        <option>PRIME</option>
+        <option>LINK</option>
+        <option>NEO</option>
+        <option>FITMOBY</option>
+        <option>OUTROS</option>
+    </select><br><br>
+
+    <button>Salvar</button>
+    </form>
+
+    <h3>🔔 ALERTA ESTOQUE BAIXO</h3>
+    {alerta.to_html() if not alerta.empty else "OK"}
+
+    <br><br>
+    <a href="/excel">📥 Baixar Excel Profissional</a>
+    """
+
+# ===============================
+# EXCEL DOWNLOAD
+# ===============================
+@app.route("/excel")
+def excel():
+    return redirect("/home")
 
 # ===============================
 # START
