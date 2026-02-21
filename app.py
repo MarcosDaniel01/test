@@ -6,23 +6,24 @@ import pandas as pd
 import io
 
 app = Flask(__name__)
-app.secret_key = "estoque_secret"
+app.secret_key = "empresa_top"
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
 
 # ===============================
-# CONEXÃO SEGURA
+# CONEXÃO
 # ===============================
 def conectar():
     try:
         return psycopg2.connect(DATABASE_URL, sslmode='require')
-    except:
+    except Exception as e:
+        print("ERRO DB:", e)
         return None
 
 # ===============================
-# CRIAR TABELAS
+# TABELAS
 # ===============================
 def criar_tabelas():
     conn = conectar()
@@ -40,8 +41,7 @@ def criar_tabelas():
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS estoque (
-        id SERIAL PRIMARY KEY,
-        produto TEXT UNIQUE,
+        produto TEXT PRIMARY KEY,
         quantidade INTEGER,
         gerenciadora TEXT
     )
@@ -74,12 +74,9 @@ def login():
         cur = conn.cursor()
         cur.execute("SELECT * FROM usuarios WHERE usuario=%s AND senha=%s",(user,senha))
         u = cur.fetchone()
-        cur.close()
-        conn.close()
 
         if u:
             session["user"] = user
-            session["tipo"] = u[3]
             return redirect("/home")
 
     return """
@@ -107,18 +104,17 @@ def home():
         tipo = request.form["tipo"]
         ger = request.form["ger"]
 
-        # 🔠 BLOQUEIO MINUSCULO
+        # 🔠 BLOQUEIO MAIUSCULO
         if item != item.upper():
-            msg = "ERRO: Use apenas MAIÚSCULO"
-        else:
-            # 🚫 BLOQUEIO GERENCIADORA (EXCETO OUTROS)
-            if ger != "OUTROS":
-                for g in GERENCIADORAS:
-                    if g in item:
-                        msg = f"ERRO: Não usar {g} no nome"
-                        break
+            msg = "ERRO: SOMENTE MAIÚSCULO"
 
-        if msg == "":
+        # 🚫 BLOQUEIO GERENCIADORA NO NOME
+        elif ger != "OUTROS":
+            for g in GERENCIADORAS:
+                if g in item:
+                    msg = f"ERRO: NÃO USAR {g} NO NOME"
+
+        else:
             conn = conectar()
             cur = conn.cursor()
 
@@ -132,8 +128,7 @@ def home():
                     cur.execute("UPDATE estoque SET quantidade = quantidade - %s WHERE produto=%s",(qtd,item))
             else:
                 if tipo == "ENTRADA":
-                    cur.execute("INSERT INTO estoque (produto,quantidade,gerenciadora) VALUES (%s,%s,%s)",
-                                (item,qtd,ger))
+                    cur.execute("INSERT INTO estoque VALUES (%s,%s,%s)",(item,qtd,ger))
 
             cur.execute("INSERT INTO movimentacoes (produto,tipo,quantidade) VALUES (%s,%s,%s)",
                         (item,tipo,qtd))
@@ -142,57 +137,12 @@ def home():
             cur.close()
             conn.close()
 
-    # ===============================
-    # EXCEL + PREVISÃO
-    # ===============================
-    conn = conectar()
-    if not conn:
-        return "Erro banco"
-
-    df = pd.read_sql("SELECT * FROM estoque", conn)
-    mov = pd.read_sql("SELECT * FROM movimentacoes", conn)
-
-    previsao = {}
-
-    for produto in df["produto"]:
-        ultimos = mov[(mov["produto"]==produto) & (mov["tipo"]=="SAIDA")]
-        media = ultimos["quantidade"].mean() if not ultimos.empty else 0
-        previsao[produto] = int(media * 6)
-
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        for g in GERENCIADORAS:
-            grupo = df[df["gerenciadora"]==g]
-            if grupo.empty: continue
-
-            dados = []
-            for _,row in grupo.iterrows():
-                p = row["produto"]
-                entradas = mov[(mov["produto"]==p)&(mov["tipo"]=="ENTRADA")]["quantidade"].sum()
-                saidas = mov[(mov["produto"]==p)&(mov["tipo"]=="SAIDA")]["quantidade"].sum()
-
-                dados.append({
-                    "ITEM":p,
-                    "ENTRADA":entradas,
-                    "SAIDA":saidas,
-                    "SALDO":row["quantidade"],
-                    "PREVISAO_6M":previsao[p]
-                })
-
-            pd.DataFrame(dados).to_excel(writer, sheet_name=g, index=False)
-
-    conn.close()
-
-    alerta = df[df["quantidade"] < 5]
-
-    return f"""
-    <h2>🚀 Sistema de Estoque</h2>
-
-    <p style='color:red;'>{msg}</p>
+    return """
+    <h2>🚀 Sistema Profissional</h2>
 
     <form method="post">
     Item: <input name="item"><br>
-    Quantidade: <input name="qtd" type="number"><br>
+    Qtd: <input name="qtd" type="number"><br>
 
     Tipo:
     <select name="tipo">
@@ -212,27 +162,80 @@ def home():
     <button>Salvar</button>
     </form>
 
-    <h3>🔔 ALERTA ESTOQUE BAIXO</h3>
-    {alerta.to_html() if not alerta.empty else "OK"}
-
-    <br><br>
-    <a href="/excel">📥 Baixar Excel</a>
+    <br>
+    <a href="/excel">📊 BAIXAR PLANILHA PROFISSIONAL</a>
     """
 
 # ===============================
-# DOWNLOAD EXCEL
+# EXCEL PROFISSIONAL
 # ===============================
 @app.route("/excel")
 def excel():
+
     conn = conectar()
     df = pd.read_sql("SELECT * FROM estoque", conn)
-    conn.close()
+    mov = pd.read_sql("SELECT * FROM movimentacoes", conn)
+
+    hoje = datetime.now()
+    inicio_mes = hoje.replace(day=1)
+    seis_meses = hoje - timedelta(days=180)
 
     output = io.BytesIO()
-    df.to_excel(output, index=False)
+
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+
+        for g in GERENCIADORAS:
+
+            grupo = df[df["gerenciadora"] == g]
+
+            if grupo.empty:
+                continue
+
+            tabela = []
+
+            for _, row in grupo.iterrows():
+
+                produto = row["produto"]
+
+                entrada_mes = mov[
+                    (mov["produto"] == produto) &
+                    (mov["tipo"] == "ENTRADA") &
+                    (mov["data"] >= inicio_mes)
+                ]["quantidade"].sum()
+
+                saida_mes = mov[
+                    (mov["produto"] == produto) &
+                    (mov["tipo"] == "SAIDA") &
+                    (mov["data"] >= inicio_mes)
+                ]["quantidade"].sum()
+
+                saida_6m = mov[
+                    (mov["produto"] == produto) &
+                    (mov["tipo"] == "SAIDA") &
+                    (mov["data"] >= seis_meses)
+                ]["quantidade"].sum()
+
+                media = saida_6m / 6 if saida_6m else 0
+                previsao = int(media * 6 * 1.2)
+
+                tabela.append({
+                    "ITEM": produto,
+                    "ENTRADA_MES": entrada_mes,
+                    "SAIDA_MES": saida_mes,
+                    "SAIDA_6_MESES": saida_6m,
+                    "SALDO": row["quantidade"],
+                    "PREVISAO_6M+20%": previsao
+                })
+
+            df_final = pd.DataFrame(tabela)
+
+            df_final.to_excel(writer, sheet_name=g, index=False)
+
+    conn.close()
+
     output.seek(0)
 
-    return send_file(output, download_name="estoque.xlsx", as_attachment=True)
+    return send_file(output, download_name="relatorio_profissional.xlsx", as_attachment=True)
 
 # ===============================
 # START
