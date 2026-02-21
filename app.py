@@ -1,65 +1,45 @@
 from flask import Flask, request, redirect, session, send_file
-import psycopg2
-import os
-from datetime import datetime, timedelta
+import sqlite3
+from datetime import datetime
 import pandas as pd
-import io
+import os
 
 app = Flask(__name__)
-app.secret_key = "empresa_estoque"
+app.secret_key = "segredo"
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+DB = "estoque.db"
 
-GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
+GERENCIADORAS = ["PRIME", "LINK", "NEO", "OUTROS"]
 
 # ===============================
-# CONEXÃO
+# BANCO
 # ===============================
 def conectar():
-    try:
-        return psycopg2.connect(DATABASE_URL, sslmode='require')
-    except Exception as e:
-        print("Erro conexão:", e)
-        return None
+    return sqlite3.connect(DB)
 
-# ===============================
-# TABELAS
-# ===============================
-def criar_tabelas():
+def criar():
     conn = conectar()
-    if not conn: return
-    cur = conn.cursor()
+    c = conn.cursor()
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS usuarios (
-        id SERIAL PRIMARY KEY,
-        usuario TEXT UNIQUE,
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS usuarios(
+        usuario TEXT,
         senha TEXT,
         tipo TEXT
     )
     """)
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS estoque (
-        id SERIAL PRIMARY KEY,
-        produto TEXT UNIQUE,
-        quantidade INTEGER,
-        gerenciadora TEXT
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS movimentacoes (
-        id SERIAL PRIMARY KEY,
-        produto TEXT,
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS movimentacao(
+        data TEXT,
+        gerenciadora TEXT,
         tipo TEXT,
-        quantidade INTEGER,
-        data TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        item TEXT,
+        quantidade INTEGER
     )
     """)
 
     conn.commit()
-    cur.close()
     conn.close()
 
 # ===============================
@@ -68,173 +48,214 @@ def criar_tabelas():
 @app.route("/", methods=["GET","POST"])
 def login():
     if request.method == "POST":
-        user = request.form["user"]
-        senha = request.form["senha"]
+        u = request.form["usuario"]
+        s = request.form["senha"]
 
         conn = conectar()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM usuarios WHERE usuario=%s AND senha=%s",(user,senha))
-        u = cur.fetchone()
-        cur.close()
+        c = conn.cursor()
+
+        c.execute("SELECT * FROM usuarios WHERE usuario=? AND senha=?", (u,s))
+        user = c.fetchone()
         conn.close()
 
-        if u:
-            session["user"] = user
-            return redirect("/home")
+        if user:
+            session["user"] = u
+            session["tipo"] = user[2]
+            return redirect("/sistema")
 
     return """
-    <h2>🔐 Login</h2>
+    <h2>Login</h2>
     <form method="post">
-    <input name="user" placeholder="Usuário"><br>
+    <input name="usuario" placeholder="Usuario"><br>
     <input name="senha" type="password"><br>
     <button>Entrar</button>
     </form>
     """
 
 # ===============================
-# HOME
+# SISTEMA
 # ===============================
-@app.route("/home", methods=["GET","POST"])
-def home():
+@app.route("/sistema")
+def sistema():
     if "user" not in session:
         return redirect("/")
 
-    msg = ""
+    dados = calcular()
 
-    if request.method == "POST":
-        item = request.form["item"]
-        qtd = int(request.form["qtd"])
-        tipo = request.form["tipo"]
-        ger = request.form["ger"]
+    grupos = {g: [] for g in GERENCIADORAS}
+    for d in dados:
+        grupos[d["ger"]].append(d)
 
-        # BLOQUEIO MAIUSCULO
-        if item != item.upper():
-            msg = "❌ Use apenas letras MAIÚSCULAS"
+    html = """
+    <html>
+    <head>
+    <style>
+    body{font-family:Arial;background:#f4f4f4;text-align:center;}
+    table{width:95%;margin:20px auto;border-collapse:collapse;background:white;}
+    th,td{padding:8px;border:1px solid #ccc;}
+    th{background:black;color:white;}
+    .PRIME{background:#2e7d32;color:white;padding:10px;}
+    .LINK{background:#1565c0;color:white;padding:10px;}
+    .NEO{background:#00897b;color:white;padding:10px;}
+    .OUTROS{background:#ef6c00;color:white;padding:10px;}
+    form{background:white;padding:20px;width:400px;margin:auto;border-radius:10px;}
+    button{background:green;color:white;padding:10px;width:100%;}
+    </style>
+    </head>
+    <body>
 
-        # BLOQUEIO GERENCIADORA
-        if ger != "OUTROS":
-            for g in GERENCIADORAS:
-                if g in item:
-                    msg = f"❌ Não usar {g} no nome"
+    <h1>📦 ESTOQUE INTELIGENTE</h1>
 
-        if msg == "":
-            conn = conectar()
-            cur = conn.cursor()
-
-            cur.execute("SELECT quantidade FROM estoque WHERE produto=%s",(item,))
-            existe = cur.fetchone()
-
-            if existe:
-                if tipo == "ENTRADA":
-                    cur.execute("UPDATE estoque SET quantidade=quantidade+%s WHERE produto=%s",(qtd,item))
-                else:
-                    cur.execute("UPDATE estoque SET quantidade=quantidade-%s WHERE produto=%s",(qtd,item))
-            else:
-                if tipo == "ENTRADA":
-                    cur.execute("INSERT INTO estoque VALUES (DEFAULT,%s,%s,%s)",(item,qtd,ger))
-
-            cur.execute("INSERT INTO movimentacoes VALUES (DEFAULT,%s,%s,%s,DEFAULT)",(item,tipo,qtd))
-
-            conn.commit()
-            cur.close()
-            conn.close()
-
-    # ===============================
-    # DADOS
-    # ===============================
-    conn = conectar()
-    df = pd.read_sql("SELECT * FROM estoque", conn)
-    mov = pd.read_sql("SELECT * FROM movimentacoes", conn)
-
-    hoje = datetime.now()
-    seis_meses = hoje - timedelta(days=180)
-
-    output = io.BytesIO()
-
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-
-        for g in GERENCIADORAS:
-
-            grupo = df[df["gerenciadora"] == g]
-
-            if grupo.empty:
-                continue
-
-            tabela = []
-
-            for _, row in grupo.iterrows():
-                produto = row["produto"]
-
-                entradas = mov[(mov["produto"]==produto)&(mov["tipo"]=="ENTRADA")]["quantidade"].sum()
-                saidas = mov[(mov["produto"]==produto)&(mov["tipo"]=="SAIDA")]["quantidade"].sum()
-
-                ult6 = mov[(mov["produto"]==produto)&(mov["tipo"]=="SAIDA")&(mov["data"]>=seis_meses)]
-                total6 = ult6["quantidade"].sum()
-
-                media_mensal = total6 / 6 if total6 else 0
-
-                previsao = int((media_mensal * 6) * 1.2)
-
-                tabela.append({
-                    "ITEM": produto,
-                    "ENTRADA_TOTAL": entradas,
-                    "SAIDA_TOTAL": saidas,
-                    "SAIDA_MENSAL_MEDIA": round(media_mensal,2),
-                    "SAIDA_ULT_6_MESES": total6,
-                    "PREVISAO_PROX_6_MESES(+20%)": previsao,
-                    "SALDO": row["quantidade"]
-                })
-
-            pd.DataFrame(tabela).to_excel(writer, sheet_name=g, index=False)
-
-    conn.close()
-
-    alerta = df[df["quantidade"] < 5]
-
-    return f"""
-    <h2>🚀 Sistema Profissional de Estoque</h2>
-
-    <p style='color:red;'>{msg}</p>
-
-    <form method="post">
-    <b>Item:</b><br><input name="item"><br>
-    <b>Quantidade:</b><br><input name="qtd" type="number"><br>
-
-    <b>Tipo:</b><br>
-    <select name="tipo">
-        <option>ENTRADA</option>
-        <option>SAIDA</option>
-    </select><br>
-
-    <b>Gerenciadora:</b><br>
+    <form method="POST" action="/inserir">
     <select name="ger">
-        <option>PRIME</option>
-        <option>LINK</option>
-        <option>NEO</option>
-        <option>FITMOBY</option>
-        <option>OUTROS</option>
-    </select><br><br>
+    <option>PRIME</option>
+    <option>LINK</option>
+    <option>NEO</option>
+    <option>OUTROS</option>
+    </select>
 
-    <button>Salvar</button>
+    <select name="tipo">
+    <option>ENTRADA</option>
+    <option>SAIDA</option>
+    </select>
+
+    <input name="item" placeholder="ITEM (MAIÚSCULO)" required>
+    <input name="qtd" type="number" required>
+
+    <button>INSERIR</button>
     </form>
 
-    <h3>🔔 ALERTA ESTOQUE BAIXO</h3>
-    {alerta.to_html() if not alerta.empty else "OK"}
-
-    <br><br>
-    <a href="/excel">📥 Baixar Excel Profissional</a>
+    <br><a href="/excel">📊 EXPORTAR EXCEL</a><br>
     """
 
+    for nome, lista in grupos.items():
+        html += f"<div class='{nome}'>{nome}</div>"
+        html += """
+        <table>
+        <tr>
+        <th>ITEM</th><th>ENTRADA</th><th>SAIDA</th>
+        <th>SALDO</th><th>MÉDIA</th><th>6 MESES</th><th>STATUS</th>
+        </tr>
+        """
+
+        for d in lista:
+            cor = "red" if d["saldo"] < 50 else "black"
+
+            html += f"""
+            <tr>
+            <td>{d['item']}</td>
+            <td>{d['entrada']}</td>
+            <td>{d['saida']}</td>
+            <td style='color:{cor}'>{d['saldo']}</td>
+            <td>{d['media']}</td>
+            <td>{d['proj']}</td>
+            <td>{d['status']}</td>
+            </tr>
+            """
+
+        html += "</table>"
+
+    html += "</body></html>"
+    return html
+
 # ===============================
-# EXCEL DOWNLOAD
+# INSERIR
+# ===============================
+@app.route("/inserir", methods=["POST"])
+def inserir():
+
+    ger = request.form["ger"].upper()
+    tipo = request.form["tipo"].upper()
+    item = request.form["item"]
+    qtd = int(request.form["qtd"])
+
+    # 🔠 BLOQUEIO MAIUSCULO
+    if item != item.upper():
+        return "ERRO: Use apenas MAIÚSCULO"
+
+    # 🚫 BLOQUEIO GERENCIADORA NO NOME
+    for g in GERENCIADORAS:
+        if g in item:
+            return f"ERRO: Não usar {g} no item"
+
+    conn = conectar()
+    c = conn.cursor()
+
+    c.execute("""
+    INSERT INTO movimentacao VALUES (?,?,?,?,?)
+    """, (datetime.now(), ger, tipo, item, qtd))
+
+    conn.commit()
+    conn.close()
+
+    return redirect("/sistema")
+
+# ===============================
+# CALCULO IA
+# ===============================
+def calcular():
+    conn = conectar()
+    df = pd.read_sql("SELECT * FROM movimentacao", conn)
+    conn.close()
+
+    if df.empty:
+        return []
+
+    resultado = []
+
+    for (ger, item), grupo in df.groupby(["gerenciadora","item"]):
+
+        entrada = grupo[grupo["tipo"]=="ENTRADA"]["quantidade"].sum()
+        saida = grupo[grupo["tipo"]=="SAIDA"]["quantidade"].sum()
+
+        entrada = entrada if not pd.isna(entrada) else 0
+        saida = saida if not pd.isna(saida) else 0
+
+        saldo = entrada - saida
+
+        meses = max(len(grupo["data"].unique()),1)
+        media = saida / meses
+
+        proj = int(media * 6)
+
+        status = "OK"
+        if saldo < proj:
+            status = "COMPRAR"
+
+        resultado.append({
+            "ger": ger,
+            "item": item,
+            "entrada": int(entrada),
+            "saida": int(saida),
+            "saldo": int(saldo),
+            "media": int(media),
+            "proj": int(proj),
+            "status": status
+        })
+
+    return resultado
+
+# ===============================
+# EXCEL
 # ===============================
 @app.route("/excel")
 def excel():
-    return redirect("/home")
+    dados = calcular()
+    df = pd.DataFrame(dados)
+    df.to_excel("estoque.xlsx", index=False)
+    return send_file("estoque.xlsx", as_attachment=True)
 
 # ===============================
 # START
 # ===============================
 if __name__ == "__main__":
-    criar_tabelas()
+    criar()
+
+    # cria admin padrão
+    conn = conectar()
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO usuarios VALUES ('admin','123','admin')")
+    conn.commit()
+    conn.close()
+
     app.run(host="0.0.0.0", port=10000)
