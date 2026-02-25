@@ -11,11 +11,15 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
 
-# ================= CONEXÃO =================
+# ===============================
+# CONEXÃO
+# ===============================
 def conectar():
     return psycopg2.connect(DATABASE_URL)
 
-# ================= CRIAR TABELAS =================
+# ===============================
+# CRIAR TABELAS
+# ===============================
 def criar():
     conn = conectar()
     c = conn.cursor()
@@ -30,6 +34,7 @@ def criar():
 
     c.execute("""
     CREATE TABLE IF NOT EXISTS movimentacao(
+        id SERIAL PRIMARY KEY,
         data TIMESTAMP,
         gerenciadora TEXT,
         tipo TEXT,
@@ -41,7 +46,9 @@ def criar():
     conn.commit()
     conn.close()
 
-# ================= LOGIN =================
+# ===============================
+# LOGIN
+# ===============================
 @app.route("/", methods=["GET","POST"])
 def login():
     if request.method == "POST":
@@ -65,29 +72,31 @@ def login():
     <h2>Login</h2>
     <form method="post">
     <input name="usuario" placeholder="Usuário"><br><br>
-    <input name="senha" type="password" placeholder="Senha"><br><br>
+    <input name="senha" type="password"><br><br>
     <button>Entrar</button>
     </form>
     </body>
     </html>
     """
 
-# ================= SISTEMA =================
+# ===============================
+# SISTEMA
+# ===============================
 @app.route("/sistema")
 def sistema():
     if "user" not in session:
         return redirect("/")
 
     dados = calcular()
-    grupos = {g: [] for g in GERENCIADORAS}
 
+    grupos = {g: [] for g in GERENCIADORAS}
     for d in dados:
         grupos[d["ger"]].append(d)
 
     html = """
     <html>
     <body style="background:#ffffff;font-family:Arial;text-align:center;">
-    <h1>ESTOQUE INTELIGENTE</h1>
+    <h1>📦 ESTOQUE INTELIGENTE</h1>
 
     <form method="POST" action="/inserir">
     <select name="ger">
@@ -107,17 +116,16 @@ def sistema():
     <input name="item" placeholder="ITEM MAIÚSCULO" required>
     <input name="qtd" type="number" required>
 
-    <button>Salvar</button>
+    <button>SALVAR</button>
     </form>
-    <br>
-    <a href="/excel">Exportar Excel</a>
-    <br><br>
+
+    <br><a href="/excel">📊 EXPORTAR EXCEL</a><br><br>
     """
 
-    # ================= ADMIN =================
+    # ADMIN
     if session["tipo"] == "admin":
         html += """
-        <h3>Criar Usuário</h3>
+        <h3>CRIAR USUÁRIO</h3>
         <form method="POST" action="/criar_usuario">
         <input name="usuario" placeholder="Usuário"><br><br>
         <input name="senha" placeholder="Senha"><br><br>
@@ -125,24 +133,25 @@ def sistema():
         <option value="operador">Operador</option>
         <option value="admin">Admin</option>
         </select><br><br>
-        <button>Criar</button>
-        </form>
-        <br>
+        <button>CRIAR</button>
+        </form><br>
         """
 
-    # ================= TABELAS =================
+    # TABELAS
     for nome, lista in grupos.items():
         html += f"<h3>{nome}</h3>"
         html += """
-        <table border="1" style="margin:auto;width:90%;">
+        <table border="1" style="width:95%;margin:auto;">
         <tr>
         <th>ITEM</th><th>ENTRADA</th><th>SAIDA</th>
-        <th>SALDO</th><th>MÉDIA</th><th>6M+20%</th><th>STATUS</th>
+        <th>SALDO</th><th>MÉDIA MENSAL</th>
+        <th>6 MESES +20%</th><th>STATUS</th>
         </tr>
         """
 
         for d in lista:
             cor = "red" if d["saldo"] < d["proj"] else "black"
+
             html += f"""
             <tr>
             <td>{d['item']}</td>
@@ -160,7 +169,9 @@ def sistema():
     html += "</body></html>"
     return html
 
-# ================= INSERIR =================
+# ===============================
+# INSERIR (SEM DUPLICAR)
+# ===============================
 @app.route("/inserir", methods=["POST"])
 def inserir():
     ger = request.form["ger"].upper()
@@ -168,19 +179,32 @@ def inserir():
     item = request.form["item"]
     qtd = int(request.form["qtd"])
 
+    # BLOQUEIO MAIUSCULO
     if item != item.upper():
-        return "ERRO: usar maiúsculo"
+        return "ERRO: USE MAIÚSCULO"
+
+    # BLOQUEIO GERENCIADORA NO NOME
+    for g in GERENCIADORAS:
+        if g in item:
+            return f"ERRO: NÃO USAR {g} NO NOME"
 
     conn = conectar()
     c = conn.cursor()
-    c.execute("INSERT INTO movimentacao VALUES (%s,%s,%s,%s,%s)",
-              (datetime.now(), ger, tipo, item, qtd))
+
+    # SALVA APENAS MOVIMENTAÇÃO (SEM DUPLICAR ESTOQUE)
+    c.execute("""
+    INSERT INTO movimentacao (data,gerenciadora,tipo,item,quantidade)
+    VALUES (%s,%s,%s,%s,%s)
+    """, (datetime.now(), ger, tipo, item, qtd))
+
     conn.commit()
     conn.close()
 
     return redirect("/sistema")
 
-# ================= CALCULO =================
+# ===============================
+# IA CALCULO
+# ===============================
 def calcular():
     conn = conectar()
     df = pd.read_sql_query("SELECT * FROM movimentacao", conn)
@@ -191,14 +215,18 @@ def calcular():
 
     resultado = []
 
+    df["data"] = pd.to_datetime(df["data"])
+
     for (ger, item), grupo in df.groupby(["gerenciadora","item"]):
+
         entrada = grupo[grupo["tipo"]=="ENTRADA"]["quantidade"].sum() or 0
         saida = grupo[grupo["tipo"]=="SAIDA"]["quantidade"].sum() or 0
 
         saldo = entrada - saida
 
-        meses = max(len(pd.to_datetime(grupo["data"]).dt.to_period("M").unique()),1)
+        meses = max(len(grupo["data"].dt.to_period("M").unique()),1)
         media = saida / meses
+
         proj = int((media * 6) * 1.2)
 
         status = "OK" if saldo >= proj else "COMPRAR"
@@ -216,11 +244,13 @@ def calcular():
 
     return resultado
 
-# ================= CRIAR USUARIO =================
+# ===============================
+# CRIAR USUARIO
+# ===============================
 @app.route("/criar_usuario", methods=["POST"])
 def criar_usuario():
     if session.get("tipo") != "admin":
-        return "Sem permissão"
+        return "SEM PERMISSÃO"
 
     u = request.form["usuario"]
     s = request.form["senha"]
@@ -228,27 +258,51 @@ def criar_usuario():
 
     conn = conectar()
     c = conn.cursor()
-    c.execute("INSERT INTO usuarios VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",(u,s,t))
+
+    c.execute("""
+    INSERT INTO usuarios (usuario,senha,tipo)
+    VALUES (%s,%s,%s)
+    ON CONFLICT (usuario) DO NOTHING
+    """,(u,s,t))
+
     conn.commit()
     conn.close()
 
     return redirect("/sistema")
 
-# ================= EXCEL =================
+# ===============================
+# EXCEL COMPLETO
+# ===============================
 @app.route("/excel")
 def excel():
     dados = calcular()
     df = pd.DataFrame(dados)
-    df.to_excel("estoque.xlsx", index=False)
+
+    writer = pd.ExcelWriter("estoque.xlsx", engine="xlsxwriter")
+
+    for g in GERENCIADORAS:
+        df_g = df[df["ger"] == g]
+        df_g.to_excel(writer, sheet_name=g, index=False)
+
+    writer.close()
+
     return send_file("estoque.xlsx", as_attachment=True)
 
-# ================= START =================
+# ===============================
+# START
+# ===============================
 if __name__ == "__main__":
     criar()
 
     conn = conectar()
     c = conn.cursor()
-    c.execute("INSERT INTO usuarios VALUES (%s,%s,'admin') ON CONFLICT DO NOTHING",("admin","123"))
+
+    c.execute("""
+    INSERT INTO usuarios (usuario,senha,tipo)
+    VALUES (%s,%s,'admin')
+    ON CONFLICT (usuario) DO NOTHING
+    """, ("admin","123"))
+
     conn.commit()
     conn.close()
 
