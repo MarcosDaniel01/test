@@ -1,39 +1,41 @@
 from flask import Flask, request, redirect, session, send_file
-import sqlite3
-from datetime import datetime
+import psycopg2
 import pandas as pd
+from datetime import datetime
 import os
-import shutil
-import getpass
 
 app = Flask(__name__)
 app.secret_key = "segredo"
 
-DB = "estoque.db"
-BACKUP = "backup.db"
+# ===============================
+# CONFIG BANCO (RENDER)
+# ===============================
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+def conectar():
+    return psycopg2.connect(DATABASE_URL)
 
 GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
 
 # ===============================
-# BANCO
+# CRIAR BANCO
 # ===============================
-def conectar():
-    return sqlite3.connect(DB)
-
 def criar():
     conn = conectar()
     c = conn.cursor()
 
     c.execute("""
     CREATE TABLE IF NOT EXISTS usuarios(
-        usuario TEXT,
+        usuario TEXT PRIMARY KEY,
+        senha TEXT,
         tipo TEXT
     )
     """)
 
     c.execute("""
     CREATE TABLE IF NOT EXISTS movimentacao(
-        data TEXT,
+        id SERIAL PRIMARY KEY,
+        data TIMESTAMP,
         gerenciadora TEXT,
         tipo TEXT,
         item TEXT,
@@ -45,41 +47,41 @@ def criar():
     conn.close()
 
 # ===============================
-# LOGIN AUTOMÁTICO
+# LOGIN
 # ===============================
-@app.route("/")
+@app.route("/", methods=["GET","POST"])
 def login():
-    user = getpass.getuser()
+    if request.method == "POST":
+        u = request.form["usuario"]
+        s = request.form["senha"]
 
-    session["user"] = user
-    session["tipo"] = "admin"
+        conn = conectar()
+        c = conn.cursor()
 
-    return redirect("/sistema")
+        c.execute("SELECT * FROM usuarios WHERE usuario=%s AND senha=%s", (u,s))
+        user = c.fetchone()
+        conn.close()
 
-# ===============================
-# BACKUP AUTOMÁTICO
-# ===============================
-def fazer_backup():
-    if os.path.exists(DB):
-        shutil.copy(DB, BACKUP)
+        if user:
+            session["user"] = u
+            return redirect("/sistema")
 
-# ===============================
-# RESTAURAR BACKUP
-# ===============================
-@app.route("/restaurar")
-def restaurar():
-    if os.path.exists(BACKUP):
-        shutil.copy(BACKUP, DB)
-        return "Backup restaurado com sucesso!"
-    return "Nenhum backup encontrado"
+    return """
+    <h2>Login</h2>
+    <form method="post">
+    <input name="usuario" placeholder="Usuario"><br>
+    <input name="senha" type="password"><br>
+    <button>Entrar</button>
+    </form>
+    """
 
 # ===============================
 # SISTEMA
 # ===============================
 @app.route("/sistema")
 def sistema():
-
-    fazer_backup()  # backup automático ao abrir
+    if "user" not in session:
+        return redirect("/")
 
     dados = calcular()
 
@@ -110,11 +112,7 @@ def sistema():
 
     <form method="POST" action="/inserir">
     <select name="ger">
-    <option>PRIME</option>
-    <option>LINK</option>
-    <option>NEO</option>
-    <option>FITMOBY</option>
-    <option>OUTROS</option>
+    """ + "".join([f"<option>{g}</option>" for g in GERENCIADORAS]) + """
     </select>
 
     <select name="tipo">
@@ -128,9 +126,7 @@ def sistema():
     <button>INSERIR</button>
     </form>
 
-    <br>
-    <a href="/excel">📊 EXPORTAR EXCEL</a><br>
-    <a href="/restaurar">♻️ RESTAURAR BACKUP</a><br>
+    <br><a href="/excel">📊 EXPORTAR EXCEL</a><br>
     """
 
     for nome, lista in grupos.items():
@@ -139,12 +135,12 @@ def sistema():
         <table>
         <tr>
         <th>ITEM</th><th>ENTRADA</th><th>SAIDA</th>
-        <th>SALDO</th><th>MÉDIA</th><th>6 MESES</th><th>STATUS</th>
+        <th>SALDO</th><th>MÉDIA</th><th>6M +20%</th><th>STATUS</th>
         </tr>
         """
 
         for d in lista:
-            cor = "red" if d["saldo"] < 50 else "black"
+            cor = "red" if d["saldo"] < d["proj"] else "black"
 
             html += f"""
             <tr>
@@ -174,21 +170,22 @@ def inserir():
     item = request.form["item"]
     qtd = int(request.form["qtd"])
 
-    # 🔠 BLOQUEIO MAIUSCULO
+    # BLOQUEIO MAIUSCULO
     if item != item.upper():
-        return "ERRO: Use apenas MAIÚSCULO"
+        return "ERRO: Use MAIÚSCULO"
 
-    # 🚫 BLOQUEIO GERENCIADORA
+    # BLOQUEIO GERENCIADORA (exceto OUTROS)
     if ger != "OUTROS":
         for g in GERENCIADORAS:
             if g in item:
-                return f"ERRO: Não usar {g} no item"
+                return "ERRO: Não usar nome da gerenciadora no item"
 
     conn = conectar()
     c = conn.cursor()
 
     c.execute("""
-    INSERT INTO movimentacao VALUES (?,?,?,?,?)
+    INSERT INTO movimentacao (data, gerenciadora, tipo, item, quantidade)
+    VALUES (%s,%s,%s,%s,%s)
     """, (datetime.now(), ger, tipo, item, qtd))
 
     conn.commit()
@@ -197,7 +194,7 @@ def inserir():
     return redirect("/sistema")
 
 # ===============================
-# IA / CALCULO
+# CALCULO
 # ===============================
 def calcular():
     conn = conectar()
@@ -215,11 +212,10 @@ def calcular():
         saida = grupo[grupo["tipo"]=="SAIDA"]["quantidade"].sum()
 
         saldo = entrada - saida
+        meses = max(len(grupo["data"].dt.to_period("M").unique()),1)
 
-        meses = max(len(grupo["data"].unique()),1)
         media = saida / meses
-
-        proj = int((media * 6) * 1.2)  # +20%
+        proj = int(media * 6 * 1.2)  # +20%
 
         status = "OK"
         if saldo < proj:
@@ -245,12 +241,23 @@ def calcular():
 def excel():
     dados = calcular()
     df = pd.DataFrame(dados)
-    df.to_excel("estoque.xlsx", index=False)
-    return send_file("estoque.xlsx", as_attachment=True)
+
+    nome = "estoque.xlsx"
+    df.to_excel(nome, index=False)
+
+    return send_file(nome, as_attachment=True)
 
 # ===============================
 # START
 # ===============================
 if __name__ == "__main__":
     criar()
+
+    conn = conectar()
+    c = conn.cursor()
+    c.execute("INSERT INTO usuarios VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
+              ("admin","123","admin"))
+    conn.commit()
+    conn.close()
+
     app.run(host="0.0.0.0", port=10000)
