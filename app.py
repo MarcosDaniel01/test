@@ -1,262 +1,217 @@
-from flask import Flask, request, redirect, session, send_file
-import psycopg2
-from datetime import datetime
-import pandas as pd
 import os
+from flask import Flask, render_template_string, request, redirect, session, send_file
+from flask_sqlalchemy import SQLAlchemy
+import pandas as pd
+from datetime import datetime
+import shutil
 
 app = Flask(__name__)
 app.secret_key = "segredo"
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+# Banco persistente (arquivo)
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///estoque.db"
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
+db = SQLAlchemy(app)
 
-# ===============================
-# CONEXÃO
-# ===============================
-def conectar():
-    return psycopg2.connect(DATABASE_URL)
+UPLOAD_FOLDER = "static/uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# ===============================
-# CRIAR TABELAS + ADMIN
-# ===============================
-def criar():
-    conn = conectar()
-    c = conn.cursor()
+# ------------------ MODELOS ------------------
 
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS usuarios(
-        usuario TEXT PRIMARY KEY,
-        senha TEXT,
-        tipo TEXT
-    )
-    """)
+class Usuario(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(50), unique=True)
+    senha = db.Column(db.String(50))
+    tipo = db.Column(db.String(10))  # admin ou operador
 
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS movimentacao(
-        id SERIAL PRIMARY KEY,
-        data TIMESTAMP,
-        gerenciadora TEXT,
-        tipo TEXT,
-        item TEXT,
-        quantidade INTEGER
-    )
-    """)
+class Item(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    nome = db.Column(db.String(100))
+    quantidade = db.Column(db.Integer)
+    gerenciadora = db.Column(db.String(100))
+    imagem = db.Column(db.String(200))
 
-    # cria admin se não existir
-    c.execute("""
-    INSERT INTO usuarios (usuario, senha, tipo)
-    VALUES ('admin','123','admin')
-    ON CONFLICT (usuario) DO NOTHING
-    """)
+class Movimentacao(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    item = db.Column(db.String(100))
+    tipo = db.Column(db.String(10))  # entrada / saída
+    quantidade = db.Column(db.Integer)
+    data = db.Column(db.DateTime, default=datetime.utcnow)
 
-    conn.commit()
-    conn.close()
+# ------------------ BACKUP ------------------
 
-# ===============================
-# LOGIN
-# ===============================
-@app.route("/", methods=["GET","POST"])
+def fazer_backup():
+    if os.path.exists("estoque.db"):
+        shutil.copy("estoque.db", "backup_estoque.db")
+
+# ------------------ LOGIN PADRÃO ------------------
+
+@app.before_first_request
+def criar_admin():
+    db.create_all()
+    if not Usuario.query.filter_by(username="admin").first():
+        admin = Usuario(username="admin", senha="123", tipo="admin")
+        db.session.add(admin)
+        db.session.commit()
+
+# ------------------ ROTAS ------------------
+
+@app.route("/", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        u = request.form["usuario"]
-        s = request.form["senha"]
-
-        conn = conectar()
-        c = conn.cursor()
-
-        c.execute("SELECT * FROM usuarios WHERE usuario=%s AND senha=%s", (u,s))
-        user = c.fetchone()
-        conn.close()
+        user = Usuario.query.filter_by(
+            username=request.form["user"],
+            senha=request.form["senha"]
+        ).first()
 
         if user:
-            session["user"] = u
-            session["tipo"] = user[2]
-            return redirect("/sistema")
-        else:
-            return "❌ Login inválido"
+            session["user"] = user.username
+            session["tipo"] = user.tipo
+            return redirect("/estoque")
 
     return """
     <h2>Login</h2>
     <form method="post">
-    <input name="usuario" placeholder="Usuário"><br>
-    <input name="senha" type="password" placeholder="Senha"><br>
-    <button>Entrar</button>
+        Usuário: <input name="user"><br>
+        Senha: <input name="senha"><br>
+        <button>Entrar</button>
     </form>
     """
 
-# ===============================
-# SISTEMA
-# ===============================
-@app.route("/sistema")
-def sistema():
+# ------------------ CRIAR USUÁRIO ------------------
+
+@app.route("/criar_usuario", methods=["GET", "POST"])
+def criar_usuario():
+    if session.get("tipo") != "admin":
+        return "Apenas admin"
+
+    if request.method == "POST":
+        novo = Usuario(
+            username=request.form["user"],
+            senha=request.form["senha"],
+            tipo=request.form["tipo"]
+        )
+        db.session.add(novo)
+        db.session.commit()
+        return redirect("/estoque")
+
+    return """
+    <h2>Criar Usuário</h2>
+    <form method="post">
+        Usuário: <input name="user"><br>
+        Senha: <input name="senha"><br>
+        Tipo:
+        <select name="tipo">
+            <option value="admin">Admin</option>
+            <option value="operador">Operador</option>
+        </select><br>
+        <button>Criar</button>
+    </form>
+    """
+
+# ------------------ ESTOQUE ------------------
+
+@app.route("/estoque", methods=["GET", "POST"])
+def estoque():
     if "user" not in session:
         return redirect("/")
 
-    dados = calcular()
+    if request.method == "POST":
+        img = request.files["imagem"]
+        path = ""
 
-    grupos = {g: [] for g in GERENCIADORAS}
-    for d in dados:
-        grupos[d["ger"]].append(d)
+        if img:
+            path = os.path.join(UPLOAD_FOLDER, img.filename)
+            img.save(path)
+
+        item = Item(
+            nome=request.form["nome"],
+            quantidade=int(request.form["quantidade"]),
+            gerenciadora=request.form["gerenciadora"],
+            imagem=path
+        )
+        db.session.add(item)
+
+        mov = Movimentacao(
+            item=item.nome,
+            tipo="entrada",
+            quantidade=item.quantidade
+        )
+        db.session.add(mov)
+
+        db.session.commit()
+        fazer_backup()
+
+    itens = Item.query.all()
 
     html = """
-    <html>
-    <head>
-    <style>
-    body{font-family:Arial;background:#f4f4f4;text-align:center;}
-    table{width:95%;margin:20px auto;border-collapse:collapse;background:white;}
-    th,td{padding:8px;border:1px solid #ccc;}
-    th{background:black;color:white;}
-    .PRIME{background:#2e7d32;color:white;padding:10px;}
-    .LINK{background:#1565c0;color:white;padding:10px;}
-    .NEO{background:#00897b;color:white;padding:10px;}
-    .FITMOBY{background:#6a1b9a;color:white;padding:10px;}
-    .OUTROS{background:#ef6c00;color:white;padding:10px;}
-    form{background:white;padding:20px;width:400px;margin:auto;border-radius:10px;}
-    button{background:green;color:white;padding:10px;width:100%;}
-    </style>
-    </head>
-    <body>
+    <h2>Estoque</h2>
+    <a href='/criar_usuario'>Criar usuário</a> |
+    <a href='/excel'>Exportar Excel</a><br><br>
 
-    <h1>📦 ESTOQUE INTELIGENTE</h1>
-
-    <form method="POST" action="/inserir">
-    <select name="ger">
-    <option>PRIME</option>
-    <option>LINK</option>
-    <option>NEO</option>
-    <option>FITMOBY</option>
-    <option>OUTROS</option>
-    </select>
-
-    <select name="tipo">
-    <option>ENTRADA</option>
-    <option>SAIDA</option>
-    </select>
-
-    <input name="item" placeholder="ITEM (MAIÚSCULO)" required>
-    <input name="qtd" type="number" required>
-
-    <button>INSERIR</button>
+    <form method="post" enctype="multipart/form-data">
+        Nome: <input name="nome">
+        Qtd: <input name="quantidade">
+        Gerenciadora: <input name="gerenciadora">
+        Imagem: <input type="file" name="imagem">
+        <button>Adicionar</button>
     </form>
 
-    <br><a href="/excel">📊 EXPORTAR EXCEL</a><br>
+    <table border=1>
+    <tr style="background-color: lightblue;">
+        <th>Nome</th>
+        <th>Qtd</th>
+        <th>Gerenciadora</th>
+        <th>Imagem</th>
+    </tr>
     """
 
-    for nome, lista in grupos.items():
-        html += f"<div class='{nome}'>{nome}</div>"
-        html += """
-        <table>
+    for i in itens:
+        html += f"""
         <tr>
-        <th>ITEM</th><th>ENTRADA</th><th>SAIDA</th>
-        <th>SALDO</th><th>MÉDIA</th><th>6 MESES</th><th>STATUS</th>
+            <td>{i.nome}</td>
+            <td>{i.quantidade}</td>
+            <td>{i.gerenciadora}</td>
+            <td><img src='/{i.imagem}' width=50></td>
         </tr>
         """
 
-        for d in lista:
-            cor = "red" if d["saldo"] < 50 else "black"
-
-            html += f"""
-            <tr>
-            <td>{d['item']}</td>
-            <td>{d['entrada']}</td>
-            <td>{d['saida']}</td>
-            <td style='color:{cor}'>{d['saldo']}</td>
-            <td>{d['media']}</td>
-            <td>{d['proj']}</td>
-            <td>{d['status']}</td>
-            </tr>
-            """
-
-        html += "</table>"
-
-    html += "</body></html>"
+    html += "</table>"
     return html
 
-# ===============================
-# INSERIR
-# ===============================
-@app.route("/inserir", methods=["POST"])
-def inserir():
-    ger = request.form["ger"].upper()
-    tipo = request.form["tipo"].upper()
-    item = request.form["item"]
-    qtd = int(request.form["qtd"])
+# ------------------ EXCEL ------------------
 
-    if item != item.upper():
-        return "❌ Use MAIÚSCULO"
-
-    for g in GERENCIADORAS:
-        if g in item:
-            return "❌ Não usar nome da gerenciadora no item"
-
-    conn = conectar()
-    c = conn.cursor()
-
-    c.execute("""
-    INSERT INTO movimentacao (data,gerenciadora,tipo,item,quantidade)
-    VALUES (%s,%s,%s,%s,%s)
-    """, (datetime.now(), ger, tipo, item, qtd))
-
-    conn.commit()
-    conn.close()
-
-    return redirect("/sistema")
-
-# ===============================
-# IA
-# ===============================
-def calcular():
-    conn = conectar()
-    df = pd.read_sql("SELECT * FROM movimentacao", conn)
-    conn.close()
-
-    if df.empty:
-        return []
-
-    resultado = []
-
-    for (ger, item), grupo in df.groupby(["gerenciadora","item"]):
-        entrada = grupo[grupo["tipo"]=="ENTRADA"]["quantidade"].sum()
-        saida = grupo[grupo["tipo"]=="SAIDA"]["quantidade"].sum()
-
-        entrada = entrada if not pd.isna(entrada) else 0
-        saida = saida if not pd.isna(saida) else 0
-
-        saldo = entrada - saida
-        media = saida / max(len(grupo),1)
-        proj = int(media * 6 * 1.2)
-
-        status = "OK" if saldo > proj else "COMPRAR"
-
-        resultado.append({
-            "ger": ger,
-            "item": item,
-            "entrada": int(entrada),
-            "saida": int(saida),
-            "saldo": int(saldo),
-            "media": int(media),
-            "proj": int(proj),
-            "status": status
-        })
-
-    return resultado
-
-# ===============================
-# EXCEL
-# ===============================
 @app.route("/excel")
 def excel():
-    dados = calcular()
-    df = pd.DataFrame(dados)
+    itens = Item.query.all()
+    movs = Movimentacao.query.all()
 
-    df.to_excel("estoque.xlsx", index=False)
-    return send_file("estoque.xlsx", as_attachment=True)
+    df1 = pd.DataFrame([{
+        "Nome": i.nome,
+        "Qtd": i.quantidade,
+        "Gerenciadora": i.gerenciadora
+    } for i in itens])
 
-# ===============================
-# START (RENDER)
-# ===============================
+    df2 = pd.DataFrame([{
+        "Item": m.item,
+        "Tipo": m.tipo,
+        "Qtd": m.quantidade,
+        "Mes": m.data.strftime("%Y-%m")
+    } for m in movs])
+
+    arquivo = "estoque.xlsx"
+
+    with pd.ExcelWriter(arquivo, engine="openpyxl") as writer:
+        df1.to_excel(writer, sheet_name="Estoque", index=False)
+
+        resumo = df2.groupby(["Mes", "Tipo"]).sum().reset_index()
+        resumo.to_excel(writer, sheet_name="Movimentacao", index=False)
+
+    return send_file(arquivo, as_attachment=True)
+
+# ------------------ RENDER PORTA ------------------
+
 if __name__ == "__main__":
-    criar()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
