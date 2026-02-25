@@ -1,309 +1,302 @@
-from flask import Flask, request, redirect, session, send_file
-import psycopg2
 import os
-from datetime import datetime
+from flask import Flask, request, redirect, url_for, session, send_file
+from flask_sqlalchemy import SQLAlchemy
+from datetime import datetime, timedelta
 import pandas as pd
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-app.secret_key = "segredo"
-
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
+app.secret_key = "supersegredo"
 
 # ===============================
-# CONEXÃO
+# DATABASE (RENDER)
 # ===============================
-def conectar():
-    return psycopg2.connect(DATABASE_URL)
+
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL")
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["UPLOAD_FOLDER"] = "static/uploads"
+
+db = SQLAlchemy(app)
+
+if not os.path.exists("static/uploads"):
+    os.makedirs("static/uploads")
 
 # ===============================
-# CRIAR TABELAS
+# MODELOS
 # ===============================
-def criar():
-    conn = conectar()
-    c = conn.cursor()
 
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS usuarios(
-        usuario TEXT PRIMARY KEY,
-        senha TEXT,
-        tipo TEXT
-    )
-    """)
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(50), unique=True)
+    password = db.Column(db.String(50))
+    role = db.Column(db.String(20))
 
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS movimentacao(
-        id SERIAL PRIMARY KEY,
-        data TIMESTAMP,
-        gerenciadora TEXT,
-        tipo TEXT,
-        item TEXT,
-        quantidade INTEGER
-    )
-    """)
+class Item(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    nome = db.Column(db.String(100), unique=True)
+    gerenciadora = db.Column(db.String(50))
+    quantidade = db.Column(db.Integer, default=0)
+    imagem = db.Column(db.String(200))
 
-    conn.commit()
-    conn.close()
+class Movimentacao(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    item = db.Column(db.String(100))
+    tipo = db.Column(db.String(10))
+    quantidade = db.Column(db.Integer)
+    data = db.Column(db.DateTime, default=datetime.utcnow)
+
+# ===============================
+# INIT
+# ===============================
+
+with app.app_context():
+    db.create_all()
+    if not User.query.filter_by(username="ADMIN").first():
+        admin = User(username="ADMIN", password="ADMIN", role="admin")
+        db.session.add(admin)
+        db.session.commit()
+
+# ===============================
+# FUNÇÕES
+# ===============================
+
+def validar_nome(nome, gerenciadora):
+    nome = nome.upper()
+    proibidas = ["PRIME", "LINK", "NEO", "FITMOB"]
+
+    if gerenciadora != "OUTROS":
+        for p in proibidas:
+            if p in nome:
+                return False
+    return nome
+
+def backup_auto():
+    itens = Item.query.all()
+    data = []
+    for i in itens:
+        data.append({
+            "Item": i.nome,
+            "Gerenciadora": i.gerenciadora,
+            "Quantidade": i.quantidade
+        })
+    df = pd.DataFrame(data)
+    df.to_excel("backup.xlsx", index=False)
 
 # ===============================
 # LOGIN
 # ===============================
-@app.route("/", methods=["GET","POST"])
+
+@app.route("/", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        u = request.form["usuario"]
-        s = request.form["senha"]
-
-        conn = conectar()
-        c = conn.cursor()
-        c.execute("SELECT * FROM usuarios WHERE usuario=%s AND senha=%s",(u,s))
-        user = c.fetchone()
-        conn.close()
-
-        if user:
-            session["user"] = u
-            session["tipo"] = user[2]
-            return redirect("/sistema")
+        user = request.form["user"].upper()
+        senha = request.form["senha"]
+        u = User.query.filter_by(username=user, password=senha).first()
+        if u:
+            session["user"] = u.username
+            session["role"] = u.role
+            return redirect("/estoque")
 
     return """
-    <html>
-    <body style="background:#ffffff;font-family:Arial;text-align:center;">
-    <h2>Login</h2>
-    <form method="post">
-    <input name="usuario" placeholder="Usuário"><br><br>
-    <input name="senha" type="password"><br><br>
-    <button>Entrar</button>
-    </form>
-    </body>
-    </html>
+    <body style='background:#f5f7fa;font-family:Arial'>
+    <div style='width:400px;margin:100px auto;background:white;padding:30px;border-radius:10px;box-shadow:0 0 10px #ccc'>
+    <h2>Sistema de Estoque</h2>
+    <form method='post'>
+    Usuário:<br><input name='user' style='width:100%'><br><br>
+    Senha:<br><input type='password' name='senha' style='width:100%'><br><br>
+    <button style='width:100%;padding:10px;background:#007bff;color:white;border:none'>Entrar</button>
+    </form></div></body>
     """
 
 # ===============================
-# SISTEMA
+# CRIAR USUÁRIO
 # ===============================
-@app.route("/sistema")
-def sistema():
+
+@app.route("/criar_usuario", methods=["GET", "POST"])
+def criar_usuario():
+    if session.get("role") != "admin":
+        return "Apenas ADMIN"
+
+    if request.method == "POST":
+        novo = User(
+            username=request.form["user"].upper(),
+            password=request.form["senha"],
+            role=request.form["role"]
+        )
+        db.session.add(novo)
+        db.session.commit()
+        return redirect("/estoque")
+
+    return """
+    <h2>Novo Usuário</h2>
+    <form method="post">
+    Usuário:<input name="user"><br>
+    Senha:<input name="senha"><br>
+    Tipo:
+    <select name="role">
+        <option value="admin">Admin</option>
+        <option value="operador">Operador</option>
+    </select><br>
+    <button>Criar</button>
+    </form>
+    """
+
+# ===============================
+# ESTOQUE
+# ===============================
+
+@app.route("/estoque", methods=["GET", "POST"])
+def estoque():
     if "user" not in session:
         return redirect("/")
 
-    dados = calcular()
+    if request.method == "POST":
+        nome = request.form["nome"]
+        ger = request.form["gerenciadora"]
+        qtd = int(request.form["qtd"])
+        tipo = request.form["tipo"]
 
-    grupos = {g: [] for g in GERENCIADORAS}
-    for d in dados:
-        grupos[d["ger"]].append(d)
+        nome = validar_nome(nome, ger)
+        if not nome:
+            return "Nome inválido!"
 
-    html = """
-    <html>
-    <body style="background:#ffffff;font-family:Arial;text-align:center;">
-    <h1>📦 ESTOQUE INTELIGENTE</h1>
+        imagem_path = None
+        if "imagem" in request.files:
+            img = request.files["imagem"]
+            if img.filename != "":
+                filename = secure_filename(img.filename)
+                imagem_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+                img.save(imagem_path)
 
-    <form method="POST" action="/inserir">
-    <select name="ger">
-    """
+        item = Item.query.filter_by(nome=nome).first()
+        if not item:
+            item = Item(nome=nome, gerenciadora=ger, quantidade=0, imagem=imagem_path)
+            db.session.add(item)
 
-    for g in GERENCIADORAS:
-        html += f"<option>{g}</option>"
+        if tipo == "entrada":
+            item.quantidade += qtd
+        else:
+            item.quantidade -= qtd
+
+        mov = Movimentacao(item=nome, tipo=tipo, quantidade=qtd)
+        db.session.add(mov)
+
+        db.session.commit()
+        backup_auto()
+
+    itens = Item.query.all()
+
+    cores = {
+        "PRIME": "#007bff",
+        "LINK": "#28a745",
+        "NEO": "#ffc107",
+        "FITMOB": "#6f42c1",
+        "OUTROS": "#6c757d"
+    }
+
+    html = "<body style='background:#f5f7fa;font-family:Arial'>"
+    html += "<h1 style='text-align:center'>Controle de Estoque</h1>"
+
+    grupos = {"PRIME": [], "LINK": [], "NEO": [], "FITMOB": [], "OUTROS": []}
+    for i in itens:
+        grupos[i.gerenciadora].append(i)
+
+    for g in grupos:
+        html += f"<h2 style='color:{cores[g]}'>{g}</h2>"
+        for i in grupos[g]:
+            html += f"""
+            <div style='background:white;padding:10px;margin:5px;border-radius:8px'>
+            <b>{i.nome}</b><br>
+            Estoque: {i.quantidade}<br>
+            """
+            if i.imagem:
+                html += f"<a href='/{i.imagem}' target='_blank'>Ver Imagem</a>"
+            html += "</div>"
 
     html += """
-    </select>
-
+    <h2>Movimentar Item</h2>
+    <form method="post" enctype="multipart/form-data">
+    Nome:<input name="nome"><br>
+    Gerenciadora:
+    <select name="gerenciadora">
+    <option>PRIME</option>
+    <option>LINK</option>
+    <option>NEO</option>
+    <option>FITMOB</option>
+    <option>OUTROS</option>
+    </select><br>
+    Quantidade:<input name="qtd"><br>
+    Tipo:
     <select name="tipo">
-    <option>ENTRADA</option>
-    <option>SAIDA</option>
-    </select>
-
-    <input name="item" placeholder="ITEM MAIÚSCULO" required>
-    <input name="qtd" type="number" required>
-
-    <button>SALVAR</button>
+    <option value="entrada">Entrada</option>
+    <option value="saida">Saída</option>
+    </select><br>
+    Imagem:<input type="file" name="imagem"><br><br>
+    <button>Salvar</button>
     </form>
-
-    <br><a href="/excel">📊 EXPORTAR EXCEL</a><br><br>
+    <br><a href="/excel">Exportar Excel</a>
     """
 
-    # ADMIN
-    if session["tipo"] == "admin":
-        html += """
-        <h3>CRIAR USUÁRIO</h3>
-        <form method="POST" action="/criar_usuario">
-        <input name="usuario" placeholder="Usuário"><br><br>
-        <input name="senha" placeholder="Senha"><br><br>
-        <select name="tipo">
-        <option value="operador">Operador</option>
-        <option value="admin">Admin</option>
-        </select><br><br>
-        <button>CRIAR</button>
-        </form><br>
-        """
+    if session.get("role") == "admin":
+        html += "<br><a href='/criar_usuario'>Criar Usuário</a>"
+        html += "<br><a href='/backup'>Baixar Backup</a>"
 
-    # TABELAS
-    for nome, lista in grupos.items():
-        html += f"<h3>{nome}</h3>"
-        html += """
-        <table border="1" style="width:95%;margin:auto;">
-        <tr>
-        <th>ITEM</th><th>ENTRADA</th><th>SAIDA</th>
-        <th>SALDO</th><th>MÉDIA MENSAL</th>
-        <th>6 MESES +20%</th><th>STATUS</th>
-        </tr>
-        """
-
-        for d in lista:
-            cor = "red" if d["saldo"] < d["proj"] else "black"
-
-            html += f"""
-            <tr>
-            <td>{d['item']}</td>
-            <td>{d['entrada']}</td>
-            <td>{d['saida']}</td>
-            <td style='color:{cor}'>{d['saldo']}</td>
-            <td>{d['media']}</td>
-            <td>{d['proj']}</td>
-            <td>{d['status']}</td>
-            </tr>
-            """
-
-        html += "</table><br>"
-
-    html += "</body></html>"
+    html += "</body>"
     return html
-
-# ===============================
-# INSERIR (SEM DUPLICAR)
-# ===============================
-@app.route("/inserir", methods=["POST"])
-def inserir():
-    ger = request.form["ger"].upper()
-    tipo = request.form["tipo"].upper()
-    item = request.form["item"]
-    qtd = int(request.form["qtd"])
-
-    # BLOQUEIO MAIUSCULO
-    if item != item.upper():
-        return "ERRO: USE MAIÚSCULO"
-
-    # BLOQUEIO GERENCIADORA NO NOME
-    for g in GERENCIADORAS:
-        if g in item:
-            return f"ERRO: NÃO USAR {g} NO NOME"
-
-    conn = conectar()
-    c = conn.cursor()
-
-    # SALVA APENAS MOVIMENTAÇÃO (SEM DUPLICAR ESTOQUE)
-    c.execute("""
-    INSERT INTO movimentacao (data,gerenciadora,tipo,item,quantidade)
-    VALUES (%s,%s,%s,%s,%s)
-    """, (datetime.now(), ger, tipo, item, qtd))
-
-    conn.commit()
-    conn.close()
-
-    return redirect("/sistema")
-
-# ===============================
-# IA CALCULO
-# ===============================
-def calcular():
-    conn = conectar()
-    df = pd.read_sql_query("SELECT * FROM movimentacao", conn)
-    conn.close()
-
-    if df.empty:
-        return []
-
-    resultado = []
-
-    df["data"] = pd.to_datetime(df["data"])
-
-    for (ger, item), grupo in df.groupby(["gerenciadora","item"]):
-
-        entrada = grupo[grupo["tipo"]=="ENTRADA"]["quantidade"].sum() or 0
-        saida = grupo[grupo["tipo"]=="SAIDA"]["quantidade"].sum() or 0
-
-        saldo = entrada - saida
-
-        meses = max(len(grupo["data"].dt.to_period("M").unique()),1)
-        media = saida / meses
-
-        proj = int((media * 6) * 1.2)
-
-        status = "OK" if saldo >= proj else "COMPRAR"
-
-        resultado.append({
-            "ger": ger,
-            "item": item,
-            "entrada": int(entrada),
-            "saida": int(saida),
-            "saldo": int(saldo),
-            "media": int(media),
-            "proj": int(proj),
-            "status": status
-        })
-
-    return resultado
-
-# ===============================
-# CRIAR USUARIO
-# ===============================
-@app.route("/criar_usuario", methods=["POST"])
-def criar_usuario():
-    if session.get("tipo") != "admin":
-        return "SEM PERMISSÃO"
-
-    u = request.form["usuario"]
-    s = request.form["senha"]
-    t = request.form["tipo"]
-
-    conn = conectar()
-    c = conn.cursor()
-
-    c.execute("""
-    INSERT INTO usuarios (usuario,senha,tipo)
-    VALUES (%s,%s,%s)
-    ON CONFLICT (usuario) DO NOTHING
-    """,(u,s,t))
-
-    conn.commit()
-    conn.close()
-
-    return redirect("/sistema")
 
 # ===============================
 # EXCEL COMPLETO
 # ===============================
+
 @app.route("/excel")
 def excel():
-    dados = calcular()
-    df = pd.DataFrame(dados)
 
-    writer = pd.ExcelWriter("estoque.xlsx", engine="xlsxwriter")
+    writer = pd.ExcelWriter("estoque.xlsx", engine="openpyxl")
 
-    for g in GERENCIADORAS:
-        df_g = df[df["ger"] == g]
-        df_g.to_excel(writer, sheet_name=g, index=False)
+    gerenciadoras = ["PRIME", "LINK", "NEO", "FITMOB", "OUTROS"]
+
+    for g in gerenciadoras:
+        itens = Item.query.filter_by(gerenciadora=g).all()
+        data = []
+
+        for i in itens:
+            movs = Movimentacao.query.filter_by(item=i.nome).all()
+
+            entradas = sum(m.quantidade for m in movs if m.tipo == "entrada")
+            saidas = sum(m.quantidade for m in movs if m.tipo == "saida")
+
+            ultimos_6 = datetime.utcnow() - timedelta(days=180)
+            saidas_6 = sum(m.quantidade for m in movs if m.tipo == "saida" and m.data >= ultimos_6)
+
+            media = saidas_6 / 6 if saidas_6 else 0
+            previsao = media * 6 * 1.2
+
+            data.append({
+                "Item": i.nome,
+                "Estoque Atual": i.quantidade,
+                "Entradas Total": entradas,
+                "Saídas Total": saidas,
+                "Saídas Últimos 6M": saidas_6,
+                "Estimativa Próx 6M +20%": round(previsao)
+            })
+
+        df = pd.DataFrame(data)
+        df.to_excel(writer, sheet_name=g, index=False)
 
     writer.close()
-
     return send_file("estoque.xlsx", as_attachment=True)
 
 # ===============================
-# START
+# BACKUP
 # ===============================
+
+@app.route("/backup")
+def backup():
+    return send_file("backup.xlsx", as_attachment=True)
+
+# ===============================
+# RUN
+# ===============================
+
 if __name__ == "__main__":
-    criar()
-
-    conn = conectar()
-    c = conn.cursor()
-
-    c.execute("""
-    INSERT INTO usuarios (usuario,senha,tipo)
-    VALUES (%s,%s,'admin')
-    ON CONFLICT (usuario) DO NOTHING
-    """, ("admin","123"))
-
-    conn.commit()
-    conn.close()
-
-    app.run(host="0.0.0.0", port=10000)
+    app.run(debug=True)
