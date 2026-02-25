@@ -1,5 +1,5 @@
 import os
-from flask import Flask, request, redirect, url_for, session, send_file
+from flask import Flask, request, redirect, session, send_file
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
 import pandas as pd
@@ -9,9 +9,8 @@ app = Flask(__name__)
 app.secret_key = "supersegredo"
 
 # ===============================
-# DATABASE (RENDER)
+# CONFIG DATABASE (RENDER)
 # ===============================
-
 app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["UPLOAD_FOLDER"] = "static/uploads"
@@ -24,7 +23,6 @@ if not os.path.exists("static/uploads"):
 # ===============================
 # MODELOS
 # ===============================
-
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True)
@@ -48,7 +46,6 @@ class Movimentacao(db.Model):
 # ===============================
 # INIT
 # ===============================
-
 with app.app_context():
     db.create_all()
     if not User.query.filter_by(username="ADMIN").first():
@@ -59,11 +56,9 @@ with app.app_context():
 # ===============================
 # FUNÇÕES
 # ===============================
-
 def validar_nome(nome, gerenciadora):
     nome = nome.upper()
     proibidas = ["PRIME", "LINK", "NEO", "FITMOB"]
-
     if gerenciadora != "OUTROS":
         for p in proibidas:
             if p in nome:
@@ -80,12 +75,11 @@ def backup_auto():
             "Quantidade": i.quantidade
         })
     df = pd.DataFrame(data)
-    df.to_excel("backup.xlsx", index=False)
+    df.to_excel("backup.xlsx", engine="openpyxl", index=False)
 
 # ===============================
 # LOGIN
 # ===============================
-
 @app.route("/", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -99,7 +93,7 @@ def login():
 
     return """
     <body style='background:#f5f7fa;font-family:Arial'>
-    <div style='width:400px;margin:100px auto;background:white;padding:30px;border-radius:10px;box-shadow:0 0 10px #ccc'>
+    <div style='width:400px;margin:100px auto;background:white;padding:30px;border-radius:10px'>
     <h2>Sistema de Estoque</h2>
     <form method='post'>
     Usuário:<br><input name='user' style='width:100%'><br><br>
@@ -109,42 +103,8 @@ def login():
     """
 
 # ===============================
-# CRIAR USUÁRIO
-# ===============================
-
-@app.route("/criar_usuario", methods=["GET", "POST"])
-def criar_usuario():
-    if session.get("role") != "admin":
-        return "Apenas ADMIN"
-
-    if request.method == "POST":
-        novo = User(
-            username=request.form["user"].upper(),
-            password=request.form["senha"],
-            role=request.form["role"]
-        )
-        db.session.add(novo)
-        db.session.commit()
-        return redirect("/estoque")
-
-    return """
-    <h2>Novo Usuário</h2>
-    <form method="post">
-    Usuário:<input name="user"><br>
-    Senha:<input name="senha"><br>
-    Tipo:
-    <select name="role">
-        <option value="admin">Admin</option>
-        <option value="operador">Operador</option>
-    </select><br>
-    <button>Criar</button>
-    </form>
-    """
-
-# ===============================
 # ESTOQUE
 # ===============================
-
 @app.route("/estoque", methods=["GET", "POST"])
 def estoque():
     if "user" not in session:
@@ -186,32 +146,18 @@ def estoque():
 
     itens = Item.query.all()
 
-    cores = {
-        "PRIME": "#007bff",
-        "LINK": "#28a745",
-        "NEO": "#ffc107",
-        "FITMOB": "#6f42c1",
-        "OUTROS": "#6c757d"
-    }
-
     html = "<body style='background:#f5f7fa;font-family:Arial'>"
-    html += "<h1 style='text-align:center'>Controle de Estoque</h1>"
+    html += "<h1>Controle de Estoque</h1>"
 
-    grupos = {"PRIME": [], "LINK": [], "NEO": [], "FITMOB": [], "OUTROS": []}
     for i in itens:
-        grupos[i.gerenciadora].append(i)
-
-    for g in grupos:
-        html += f"<h2 style='color:{cores[g]}'>{g}</h2>"
-        for i in grupos[g]:
-            html += f"""
-            <div style='background:white;padding:10px;margin:5px;border-radius:8px'>
-            <b>{i.nome}</b><br>
-            Estoque: {i.quantidade}<br>
-            """
-            if i.imagem:
-                html += f"<a href='/{i.imagem}' target='_blank'>Ver Imagem</a>"
-            html += "</div>"
+        html += f"""
+        <div style='background:white;padding:10px;margin:5px;border-radius:8px'>
+        <b>{i.nome}</b> | {i.gerenciadora}<br>
+        Estoque: {i.quantidade}<br>
+        """
+        if i.imagem:
+            html += f"<a href='/{i.imagem}' target='_blank'>Ver Imagem</a>"
+        html += "</div>"
 
     html += """
     <h2>Movimentar Item</h2>
@@ -237,20 +183,14 @@ def estoque():
     <br><a href="/excel">Exportar Excel</a>
     """
 
-    if session.get("role") == "admin":
-        html += "<br><a href='/criar_usuario'>Criar Usuário</a>"
-        html += "<br><a href='/backup'>Baixar Backup</a>"
-
     html += "</body>"
     return html
 
 # ===============================
-# EXCEL COMPLETO
+# EXCEL (SEM XLSXWRITER)
 # ===============================
-
 @app.route("/excel")
 def excel():
-
     writer = pd.ExcelWriter("estoque.xlsx", engine="openpyxl")
 
     gerenciadoras = ["PRIME", "LINK", "NEO", "FITMOB", "OUTROS"]
@@ -287,16 +227,8 @@ def excel():
     return send_file("estoque.xlsx", as_attachment=True)
 
 # ===============================
-# BACKUP
+# RENDER PORT FIX
 # ===============================
-
-@app.route("/backup")
-def backup():
-    return send_file("backup.xlsx", as_attachment=True)
-
-# ===============================
-# RUN
-# ===============================
-
 if __name__ == "__main__":
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
