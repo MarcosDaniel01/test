@@ -3,13 +3,16 @@ import sqlite3
 from datetime import datetime
 import pandas as pd
 import os
+import shutil
+import getpass
 
 app = Flask(__name__)
 app.secret_key = "segredo"
 
 DB = "estoque.db"
+BACKUP = "backup.db"
 
-GERENCIADORAS = ["PRIME", "LINK", "NEO", "OUTROS"]
+GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
 
 # ===============================
 # BANCO
@@ -24,7 +27,6 @@ def criar():
     c.execute("""
     CREATE TABLE IF NOT EXISTS usuarios(
         usuario TEXT,
-        senha TEXT,
         tipo TEXT
     )
     """)
@@ -43,42 +45,41 @@ def criar():
     conn.close()
 
 # ===============================
-# LOGIN
+# LOGIN AUTOMÁTICO
 # ===============================
-@app.route("/", methods=["GET","POST"])
+@app.route("/")
 def login():
-    if request.method == "POST":
-        u = request.form["usuario"]
-        s = request.form["senha"]
+    user = getpass.getuser()
 
-        conn = conectar()
-        c = conn.cursor()
+    session["user"] = user
+    session["tipo"] = "admin"
 
-        c.execute("SELECT * FROM usuarios WHERE usuario=? AND senha=?", (u,s))
-        user = c.fetchone()
-        conn.close()
+    return redirect("/sistema")
 
-        if user:
-            session["user"] = u
-            session["tipo"] = user[2]
-            return redirect("/sistema")
+# ===============================
+# BACKUP AUTOMÁTICO
+# ===============================
+def fazer_backup():
+    if os.path.exists(DB):
+        shutil.copy(DB, BACKUP)
 
-    return """
-    <h2>Login</h2>
-    <form method="post">
-    <input name="usuario" placeholder="Usuario"><br>
-    <input name="senha" type="password"><br>
-    <button>Entrar</button>
-    </form>
-    """
+# ===============================
+# RESTAURAR BACKUP
+# ===============================
+@app.route("/restaurar")
+def restaurar():
+    if os.path.exists(BACKUP):
+        shutil.copy(BACKUP, DB)
+        return "Backup restaurado com sucesso!"
+    return "Nenhum backup encontrado"
 
 # ===============================
 # SISTEMA
 # ===============================
 @app.route("/sistema")
 def sistema():
-    if "user" not in session:
-        return redirect("/")
+
+    fazer_backup()  # backup automático ao abrir
 
     dados = calcular()
 
@@ -97,6 +98,7 @@ def sistema():
     .PRIME{background:#2e7d32;color:white;padding:10px;}
     .LINK{background:#1565c0;color:white;padding:10px;}
     .NEO{background:#00897b;color:white;padding:10px;}
+    .FITMOBY{background:#6a1b9a;color:white;padding:10px;}
     .OUTROS{background:#ef6c00;color:white;padding:10px;}
     form{background:white;padding:20px;width:400px;margin:auto;border-radius:10px;}
     button{background:green;color:white;padding:10px;width:100%;}
@@ -111,6 +113,7 @@ def sistema():
     <option>PRIME</option>
     <option>LINK</option>
     <option>NEO</option>
+    <option>FITMOBY</option>
     <option>OUTROS</option>
     </select>
 
@@ -125,7 +128,9 @@ def sistema():
     <button>INSERIR</button>
     </form>
 
-    <br><a href="/excel">📊 EXPORTAR EXCEL</a><br>
+    <br>
+    <a href="/excel">📊 EXPORTAR EXCEL</a><br>
+    <a href="/restaurar">♻️ RESTAURAR BACKUP</a><br>
     """
 
     for nome, lista in grupos.items():
@@ -173,10 +178,11 @@ def inserir():
     if item != item.upper():
         return "ERRO: Use apenas MAIÚSCULO"
 
-    # 🚫 BLOQUEIO GERENCIADORA NO NOME
-    for g in GERENCIADORAS:
-        if g in item:
-            return f"ERRO: Não usar {g} no item"
+    # 🚫 BLOQUEIO GERENCIADORA
+    if ger != "OUTROS":
+        for g in GERENCIADORAS:
+            if g in item:
+                return f"ERRO: Não usar {g} no item"
 
     conn = conectar()
     c = conn.cursor()
@@ -191,7 +197,7 @@ def inserir():
     return redirect("/sistema")
 
 # ===============================
-# CALCULO IA
+# IA / CALCULO
 # ===============================
 def calcular():
     conn = conectar()
@@ -208,15 +214,12 @@ def calcular():
         entrada = grupo[grupo["tipo"]=="ENTRADA"]["quantidade"].sum()
         saida = grupo[grupo["tipo"]=="SAIDA"]["quantidade"].sum()
 
-        entrada = entrada if not pd.isna(entrada) else 0
-        saida = saida if not pd.isna(saida) else 0
-
         saldo = entrada - saida
 
         meses = max(len(grupo["data"].unique()),1)
         media = saida / meses
 
-        proj = int(media * 6)
+        proj = int((media * 6) * 1.2)  # +20%
 
         status = "OK"
         if saldo < proj:
@@ -250,12 +253,4 @@ def excel():
 # ===============================
 if __name__ == "__main__":
     criar()
-
-    # cria admin padrão
-    conn = conectar()
-    c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO usuarios VALUES ('admin','123','admin')")
-    conn.commit()
-    conn.close()
-
     app.run(host="0.0.0.0", port=10000)
