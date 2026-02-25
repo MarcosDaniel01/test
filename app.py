@@ -6,26 +6,29 @@ import os
 import shutil
 
 app = Flask(__name__)
-app.secret_key = "segredo"
+app.secret_key = "segredo123"
 
-# ===============================
-# 🔥 CORREÇÃO RENDER DATABASE
-# ===============================
-database_url = os.environ.get("DATABASE_URL")
+# ==========================================
+# 🔥 CONFIGURAÇÃO BANCO (RENDER + LOCAL)
+# ==========================================
+database_url = os.getenv("DATABASE_URL")
 
-if database_url and database_url.startswith("postgres://"):
-    database_url = database_url.replace("postgres://", "postgresql://", 1)
+if database_url:
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
+else:
+    database_url = "sqlite:///estoque.db"
 
-app.config["SQLALCHEMY_DATABASE_URI"] = database_url or "sqlite:///estoque.db"
+app.config["SQLALCHEMY_DATABASE_URI"] = database_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 
 GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
 
-# ===============================
-# BANCO
-# ===============================
+# ==========================================
+# MODELOS
+# ==========================================
 class Usuario(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     usuario = db.Column(db.String(50), unique=True)
@@ -40,29 +43,33 @@ class Movimentacao(db.Model):
     item = db.Column(db.String(100))
     quantidade = db.Column(db.Integer)
 
-# ===============================
-# CRIAR BANCO AUTOMATICO
-# ===============================
+# ==========================================
+# CRIAR BANCO + ADMIN AUTOMÁTICO
+# ==========================================
 with app.app_context():
     db.create_all()
 
-    if not Usuario.query.filter_by(usuario="admin").first():
-        db.session.add(Usuario(usuario="admin", senha="123", tipo="admin"))
+    admin = Usuario.query.filter_by(usuario="admin").first()
+    if not admin:
+        novo = Usuario(usuario="admin", senha="123", tipo="admin")
+        db.session.add(novo)
         db.session.commit()
 
-# ===============================
-# BACKUP AUTOMATICO
-# ===============================
+# ==========================================
+# BACKUP (SOMENTE SQLITE)
+# ==========================================
 def backup():
     if "sqlite" in app.config["SQLALCHEMY_DATABASE_URI"]:
         if os.path.exists("estoque.db"):
             shutil.copy("estoque.db", "backup.db")
 
-# ===============================
+# ==========================================
 # LOGIN
-# ===============================
+# ==========================================
 @app.route("/", methods=["GET", "POST"])
 def login():
+    erro = ""
+
     if request.method == "POST":
         u = request.form["usuario"]
         s = request.form["senha"]
@@ -73,21 +80,24 @@ def login():
             session["user"] = u
             session["tipo"] = user.tipo
             return redirect("/sistema")
+        else:
+            erro = "Usuário ou senha inválidos"
 
-    return """
+    return f"""
     <body style='font-family:Arial;text-align:center;background:#f4f4f4'>
     <h2>Login</h2>
     <form method="post">
-    <input name="usuario" placeholder="Usuario"><br><br>
-    <input name="senha" type="password"><br><br>
+    <input name="usuario" placeholder="Usuário"><br><br>
+    <input name="senha" type="password" placeholder="Senha"><br><br>
     <button>Entrar</button>
     </form>
+    <p style='color:red'>{erro}</p>
     </body>
     """
 
-# ===============================
+# ==========================================
 # CRIAR USUARIO (ADMIN)
-# ===============================
+# ==========================================
 @app.route("/criar_usuario", methods=["POST"])
 def criar_usuario():
     if session.get("tipo") != "admin":
@@ -105,9 +115,9 @@ def criar_usuario():
 
     return redirect("/sistema")
 
-# ===============================
-# INSERIR (ENTRADA/SAIDA)
-# ===============================
+# ==========================================
+# INSERIR MOVIMENTAÇÃO
+# ==========================================
 @app.route("/inserir", methods=["POST"])
 def inserir():
 
@@ -116,14 +126,8 @@ def inserir():
     item = request.form["item"]
     qtd = int(request.form["qtd"])
 
-    # BLOQUEIO MAIUSCULO
     if item != item.upper():
         return "ERRO: SOMENTE MAIÚSCULO"
-
-    # BLOQUEIO GERENCIADORA NO NOME
-    for g in GERENCIADORAS:
-        if g in item and ger != "OUTROS":
-            return "ERRO: NÃO COLOCAR GERENCIADORA NO ITEM"
 
     nova = Movimentacao(
         data=datetime.now(),
@@ -140,9 +144,9 @@ def inserir():
 
     return redirect("/sistema")
 
-# ===============================
-# CALCULO INTELIGENTE
-# ===============================
+# ==========================================
+# CALCULO ESTOQUE
+# ==========================================
 def calcular():
     dados = Movimentacao.query.all()
 
@@ -160,6 +164,7 @@ def calcular():
     resultado = []
 
     for (ger, item), grupo in df.groupby(["ger","item"]):
+
         entrada = grupo[grupo["tipo"]=="ENTRADA"]["qtd"].sum()
         saida = grupo[grupo["tipo"]=="SAIDA"]["qtd"].sum()
 
@@ -190,17 +195,17 @@ def calcular():
 
     return resultado
 
-# ===============================
+# ==========================================
 # SISTEMA
-# ===============================
+# ==========================================
 @app.route("/sistema")
 def sistema():
     if "user" not in session:
         return redirect("/")
 
     dados = calcular()
-
     grupos = {g: [] for g in GERENCIADORAS}
+
     for d in dados:
         grupos[d["ger"]].append(d)
 
@@ -210,11 +215,6 @@ def sistema():
     table{width:95%;margin:20px auto;border-collapse:collapse;background:white;}
     th,td{padding:8px;border:1px solid #ccc;}
     th{background:black;color:white;}
-    .PRIME{background:#2e7d32;color:white;padding:10px;}
-    .LINK{background:#1565c0;color:white;padding:10px;}
-    .NEO{background:#00897b;color:white;padding:10px;}
-    .FITMOBY{background:#6a1b9a;color:white;padding:10px;}
-    .OUTROS{background:#ef6c00;color:white;padding:10px;}
     </style>
 
     <h1>📦 ESTOQUE INTELIGENTE</h1>
@@ -243,7 +243,7 @@ def sistema():
 
     if session.get("tipo") == "admin":
         html += """
-        <h3>Criar Usuario</h3>
+        <h3>Criar Usuário</h3>
         <form method="POST" action="/criar_usuario">
         <input name="usuario" placeholder="usuario">
         <input name="senha" placeholder="senha">
@@ -256,7 +256,7 @@ def sistema():
         """
 
     for nome, lista in grupos.items():
-        html += f"<div class='{nome}'>{nome}</div><table>"
+        html += f"<h3>{nome}</h3><table>"
         html += "<tr><th>ITEM</th><th>ENTRADA</th><th>SAIDA</th><th>SALDO</th><th>MÉDIA</th><th>6M+20%</th><th>STATUS</th></tr>"
 
         for d in lista:
@@ -276,22 +276,19 @@ def sistema():
 
     return html
 
-# ===============================
+# ==========================================
 # EXCEL
-# ===============================
+# ==========================================
 @app.route("/excel")
 def excel():
     dados = calcular()
     df = pd.DataFrame(dados)
-
     df.to_excel("estoque.xlsx", index=False)
-
     return send_file("estoque.xlsx", as_attachment=True)
 
-# ===============================
-# START RENDER
-# ===============================
+# ==========================================
+# START (RENDER)
+# ==========================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
