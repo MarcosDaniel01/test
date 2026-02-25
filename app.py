@@ -1,42 +1,53 @@
 from flask import Flask, request, redirect, session, send_file
-import sqlite3
+import psycopg2
+import os
 from datetime import datetime
 import pandas as pd
-import os
 
 app = Flask(__name__)
 app.secret_key = "segredo"
 
-DB = "estoque.db"
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
 
-# ================= BANCO =================
+# ===============================
+# CONEXÃO POSTGRES (PERMANENTE)
+# ===============================
 def conectar():
-    return sqlite3.connect(DB)
+    return psycopg2.connect(DATABASE_URL)
 
+# ===============================
+# CRIAR TABELAS
+# ===============================
 def criar():
     conn = conectar()
     c = conn.cursor()
 
-    c.execute("""CREATE TABLE IF NOT EXISTS usuarios(
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS usuarios(
         usuario TEXT PRIMARY KEY,
         senha TEXT,
         tipo TEXT
-    )""")
+    )
+    """)
 
-    c.execute("""CREATE TABLE IF NOT EXISTS movimentacao(
-        data TEXT,
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS movimentacao(
+        data TIMESTAMP,
         gerenciadora TEXT,
         tipo TEXT,
         item TEXT,
         quantidade INTEGER
-    )""")
+    )
+    """)
 
     conn.commit()
     conn.close()
 
-# ================= LOGIN =================
+# ===============================
+# LOGIN
+# ===============================
 @app.route("/", methods=["GET","POST"])
 def login():
     if request.method == "POST":
@@ -45,7 +56,7 @@ def login():
 
         conn = conectar()
         c = conn.cursor()
-        c.execute("SELECT * FROM usuarios WHERE usuario=? AND senha=?", (u,s))
+        c.execute("SELECT * FROM usuarios WHERE usuario=%s AND senha=%s", (u,s))
         user = c.fetchone()
         conn.close()
 
@@ -63,7 +74,9 @@ def login():
     </form>
     """
 
-# ================= SISTEMA =================
+# ===============================
+# SISTEMA
+# ===============================
 @app.route("/sistema")
 def sistema():
     if "user" not in session:
@@ -79,27 +92,31 @@ def sistema():
     <html>
     <head>
     <style>
-    body{font-family:Arial;background:#111;color:white;text-align:center;}
-    table{width:95%;margin:20px auto;border-collapse:collapse;background:#222;}
-    th,td{padding:10px;border:1px solid #444;}
-    th{background:black;}
-    .PRIME{background:#2e7d32;padding:10px;}
-    .LINK{background:#1565c0;padding:10px;}
-    .NEO{background:#00897b;padding:10px;}
-    .FITMOBY{background:#6a1b9a;padding:10px;}
-    .OUTROS{background:#ef6c00;padding:10px;}
-    form{background:#222;padding:20px;width:400px;margin:auto;border-radius:10px;}
-    input,select{width:100%;padding:8px;margin:5px;}
-    button{background:green;color:white;padding:10px;width:100%;}
+    body{font-family:Arial;background:#0f172a;color:white;text-align:center;}
+    table{width:95%;margin:20px auto;border-collapse:collapse;background:white;color:black;}
+    th,td{padding:8px;border:1px solid #ccc;}
+    th{background:black;color:white;}
+    .PRIME{background:#22c55e;padding:10px;}
+    .LINK{background:#3b82f6;padding:10px;}
+    .NEO{background:#14b8a6;padding:10px;}
+    .FITMOBY{background:#a855f7;padding:10px;}
+    .OUTROS{background:#f97316;padding:10px;}
+    form{background:#1e293b;padding:20px;width:400px;margin:auto;border-radius:10px;}
+    button{background:#22c55e;color:white;padding:10px;width:100%;}
+    input,select{padding:10px;margin:5px;width:95%;}
     </style>
     </head>
     <body>
 
-    <h1>📦 ESTOQUE INTELIGENTE</h1>
+    <h1>🚀 ESTOQUE INTELIGENTE PRO</h1>
 
     <form method="POST" action="/inserir">
     <select name="ger">
-    """ + "".join([f"<option>{g}</option>" for g in GERENCIADORAS]) + """
+    <option>PRIME</option>
+    <option>LINK</option>
+    <option>NEO</option>
+    <option>FITMOBY</option>
+    <option>OUTROS</option>
     </select>
 
     <select name="tipo">
@@ -114,17 +131,34 @@ def sistema():
     </form>
 
     <br>
-    <a href="/excel">📊 Excel</a> |
-    <a href="/backup">💾 Backup</a> |
-    <a href="/novo_usuario">👤 Novo Usuário</a>
+    <a href="/excel">📊 EXPORTAR EXCEL</a><br><br>
     """
 
+    if session["tipo"] == "admin":
+        html += """
+        <form method="POST" action="/criar_usuario">
+        <h3>Criar Operador</h3>
+        <input name="usuario" placeholder="Usuario">
+        <input name="senha" placeholder="Senha">
+        <button>Criar</button>
+        </form>
+
+        <br>
+        <a href="/backup">💾 BACKUP</a><br><br>
+        """
+
     for nome, lista in grupos.items():
-        html += f"<div class='{nome}'>{nome}</div><table>"
-        html += "<tr><th>ITEM</th><th>ENT</th><th>SAI</th><th>SALDO</th><th>MÉDIA</th><th>6M+20%</th><th>STATUS</th></tr>"
+        html += f"<div class='{nome}'><b>{nome}</b></div>"
+        html += """
+        <table>
+        <tr>
+        <th>ITEM</th><th>ENTRADA</th><th>SAIDA</th>
+        <th>SALDO</th><th>MÉDIA</th><th>6M+20%</th><th>STATUS</th>
+        </tr>
+        """
 
         for d in lista:
-            cor = "red" if d["saldo"] < d["proj"] else "white"
+            cor = "red" if d["saldo"] < d["proj"] else "black"
 
             html += f"""
             <tr>
@@ -143,7 +177,9 @@ def sistema():
     html += "</body></html>"
     return html
 
-# ================= INSERIR =================
+# ===============================
+# INSERIR
+# ===============================
 @app.route("/inserir", methods=["POST"])
 def inserir():
     ger = request.form["ger"].upper()
@@ -152,33 +188,33 @@ def inserir():
     qtd = int(request.form["qtd"])
 
     if item != item.upper():
-        return "ERRO: Apenas MAIÚSCULO"
+        return "ERRO: USE MAIÚSCULO"
 
-    if ger != "OUTROS":
-        for g in GERENCIADORAS:
-            if g in item:
-                return "ERRO: não usar gerenciadora no nome"
+    for g in GERENCIADORAS:
+        if g in item:
+            return f"ERRO: NÃO USAR {g}"
 
     conn = conectar()
     c = conn.cursor()
-    c.execute("INSERT INTO movimentacao VALUES (?,?,?,?,?)",
+
+    c.execute("INSERT INTO movimentacao VALUES (%s,%s,%s,%s,%s)",
               (datetime.now(), ger, tipo, item, qtd))
+
     conn.commit()
     conn.close()
 
     return redirect("/sistema")
 
-# ================= IA =================
+# ===============================
+# IA CALCULO
+# ===============================
 def calcular():
     conn = conectar()
-    df = pd.read_sql("SELECT * FROM movimentacao", conn)
+    df = pd.read_sql_query("SELECT * FROM movimentacao", conn)
     conn.close()
 
     if df.empty:
         return []
-
-    df["data"] = pd.to_datetime(df["data"])
-    df["mes"] = df["data"].dt.to_period("M")
 
     resultado = []
 
@@ -186,14 +222,17 @@ def calcular():
         entrada = grupo[grupo["tipo"]=="ENTRADA"]["quantidade"].sum()
         saida = grupo[grupo["tipo"]=="SAIDA"]["quantidade"].sum()
 
+        entrada = entrada or 0
+        saida = saida or 0
+
         saldo = entrada - saida
-        media = saida / max(len(grupo["mes"].unique()),1)
 
-        proj = int(media * 6 * 1.2)  # +20%
+        meses = max(len(pd.to_datetime(grupo["data"]).dt.to_period("M").unique()),1)
+        media = saida / meses
 
-        status = "OK"
-        if saldo < proj:
-            status = "COMPRAR"
+        proj = int((media * 6) * 1.2)
+
+        status = "OK" if saldo >= proj else "COMPRAR"
 
         resultado.append({
             "ger": ger,
@@ -208,75 +247,56 @@ def calcular():
 
     return resultado
 
-# ================= EXCEL =================
-@app.route("/excel")
-def excel():
+# ===============================
+# CRIAR OPERADOR
+# ===============================
+@app.route("/criar_usuario", methods=["POST"])
+def criar_usuario():
+    if session["tipo"] != "admin":
+        return "SEM PERMISSÃO"
+
+    u = request.form["usuario"]
+    s = request.form["senha"]
+
     conn = conectar()
-    df = pd.read_sql("SELECT * FROM movimentacao", conn)
+    c = conn.cursor()
+    c.execute("INSERT INTO usuarios VALUES (%s,%s,'operador') ON CONFLICT DO NOTHING", (u,s))
+    conn.commit()
     conn.close()
 
-    df["data"] = pd.to_datetime(df["data"])
-    df["mes"] = df["data"].dt.to_period("M").astype(str)
+    return redirect("/sistema")
 
-    estoque = calcular()
-    df_estoque = pd.DataFrame(estoque)
-
-    mensal = df.groupby(["gerenciadora","item","mes","tipo"])["quantidade"].sum().reset_index()
-
-    nome = "estoque.xlsx"
-
-    with pd.ExcelWriter(nome, engine="xlsxwriter") as writer:
-        df_estoque.to_excel(writer, sheet_name="ESTOQUE", index=False)
-        mensal.to_excel(writer, sheet_name="MENSAL", index=False)
-
-    return send_file(nome, as_attachment=True)
-
-# ================= ADMIN =================
-@app.route("/novo_usuario", methods=["GET","POST"])
-def novo():
-    if session.get("tipo") != "admin":
-        return "Acesso negado"
-
-    if request.method == "POST":
-        u = request.form["usuario"]
-        s = request.form["senha"]
-        t = request.form["tipo"]
-
-        conn = conectar()
-        c = conn.cursor()
-        c.execute("INSERT INTO usuarios VALUES (?,?,?)",(u,s,t))
-        conn.commit()
-        conn.close()
-
-        return redirect("/sistema")
-
-    return """
-    <form method="post">
-    <input name="usuario">
-    <input name="senha">
-    <select name="tipo">
-    <option>admin</option>
-    <option>operador</option>
-    </select>
-    <button>Criar</button>
-    </form>
-    """
-
-# ================= BACKUP =================
+# ===============================
+# BACKUP
+# ===============================
 @app.route("/backup")
 def backup():
-    if session.get("tipo") != "admin":
-        return "Acesso negado"
+    conn = conectar()
+    df = pd.read_sql_query("SELECT * FROM movimentacao", conn)
+    conn.close()
 
-    return send_file(DB, as_attachment=True)
+    df.to_excel("backup.xlsx", index=False)
+    return send_file("backup.xlsx", as_attachment=True)
 
-# ================= START =================
+# ===============================
+# EXCEL
+# ===============================
+@app.route("/excel")
+def excel():
+    dados = calcular()
+    df = pd.DataFrame(dados)
+    df.to_excel("estoque.xlsx", index=False)
+    return send_file("estoque.xlsx", as_attachment=True)
+
+# ===============================
+# START
+# ===============================
 if __name__ == "__main__":
     criar()
 
     conn = conectar()
     c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO usuarios VALUES ('admin','123','admin')")
+    c.execute("INSERT INTO usuarios VALUES (%s,%s,'admin') ON CONFLICT DO NOTHING", ("admin","123"))
     conn.commit()
     conn.close()
 
