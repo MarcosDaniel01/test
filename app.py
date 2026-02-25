@@ -1,28 +1,28 @@
 from flask import Flask, request, redirect, session, send_file
-import os
 from datetime import datetime
 import pandas as pd
+import os
 from sqlalchemy import create_engine, text
 
 app = Flask(__name__)
 app.secret_key = "segredo"
 
 # ==========================================
-# DATABASE (Render ou Local)
+# BANCO (Render ou Local)
 # ==========================================
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if DATABASE_URL:
-    engine = create_engine(DATABASE_URL, future=True)
+    engine = create_engine(DATABASE_URL)
 else:
-    engine = create_engine("sqlite:///estoque.db", future=True)
+    engine = create_engine("sqlite:///estoque.db")
 
 GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
 
 # ==========================================
-# CRIAR TABELAS
+# CRIAR BANCO
 # ==========================================
-def init_db():
+def criar():
     with engine.begin() as conn:
         conn.execute(text("""
         CREATE TABLE IF NOT EXISTS usuarios(
@@ -34,8 +34,8 @@ def init_db():
 
         conn.execute(text("""
         CREATE TABLE IF NOT EXISTS movimentacao(
-            id SERIAL PRIMARY KEY,
-            data TIMESTAMP,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            data TEXT,
             gerenciadora TEXT,
             tipo TEXT,
             item TEXT,
@@ -46,10 +46,10 @@ def init_db():
         conn.execute(text("""
         INSERT INTO usuarios (usuario, senha, tipo)
         VALUES ('admin','123','admin')
-        ON CONFLICT (usuario) DO NOTHING
+        ON CONFLICT(usuario) DO NOTHING
         """))
 
-init_db()
+criar()
 
 # ==========================================
 # LOGIN
@@ -62,28 +62,26 @@ def login():
 
         with engine.connect() as conn:
             user = conn.execute(text("""
-                SELECT * FROM usuarios
-                WHERE usuario=:u AND senha=:s
+            SELECT * FROM usuarios
+            WHERE usuario=:u AND senha=:s
             """), {"u":u,"s":s}).fetchone()
 
         if user:
             session["user"] = u
             session["tipo"] = user[2]
             return redirect("/sistema")
-        else:
-            return "Login inválido"
 
     return """
     <h2>Login</h2>
     <form method="post">
-    <input name="usuario" placeholder="usuario"><br><br>
-    <input name="senha" type="password"><br><br>
+    <input name="usuario"><br>
+    <input name="senha" type="password"><br>
     <button>Entrar</button>
     </form>
     """
 
 # ==========================================
-# CRIAR USUARIO (FUNCIONANDO)
+# CRIAR USUARIO (ADMIN)
 # ==========================================
 @app.route("/criar_usuario", methods=["GET","POST"])
 def criar_usuario():
@@ -95,59 +93,49 @@ def criar_usuario():
         s = request.form["senha"]
         t = request.form["tipo"]
 
-        if not u or not s:
-            return "Preencha todos os campos"
-
         with engine.begin() as conn:
-
-            existe = conn.execute(text("""
-                SELECT usuario FROM usuarios
-                WHERE usuario=:u
-            """), {"u":u}).fetchone()
-
-            if existe:
-                return "Usuário já existe"
-
             conn.execute(text("""
-                INSERT INTO usuarios (usuario, senha, tipo)
-                VALUES (:u,:s,:t)
+            INSERT INTO usuarios VALUES (:u,:s,:t)
             """), {"u":u,"s":s,"t":t})
 
         return redirect("/sistema")
 
     return """
-    <h2>Novo Usuário</h2>
+    <h2>Criar Usuário</h2>
     <form method="post">
-    <input name="usuario"><br><br>
-    <input name="senha"><br><br>
+    <input name="usuario"><br>
+    <input name="senha"><br>
     <select name="tipo">
-    <option value="admin">admin</option>
-    <option value="operador">operador</option>
-    </select><br><br>
+    <option>admin</option>
+    <option>operador</option>
+    </select>
     <button>Criar</button>
     </form>
     """
 
 # ==========================================
-# INSERIR ENTRADA / SAIDA (CORRIGIDO)
+# INSERIR
 # ==========================================
 @app.route("/inserir", methods=["POST"])
 def inserir():
+
     ger = request.form["ger"].upper()
     tipo = request.form["tipo"].upper()
-    item = request.form["item"].strip()
+    item = request.form["item"]
     qtd = int(request.form["qtd"])
 
     if item != item.upper():
-        return "Use MAIÚSCULO no item"
+        return "ERRO: Use MAIÚSCULO"
+
+    for g in GERENCIADORAS:
+        if g in item:
+            return f"ERRO: Não usar {g} no item"
 
     with engine.begin() as conn:
         conn.execute(text("""
-            INSERT INTO movimentacao
-            (data, gerenciadora, tipo, item, quantidade)
-            VALUES (:d,:g,:t,:i,:q)
+        INSERT INTO movimentacao VALUES (NULL,:d,:g,:t,:i,:q)
         """), {
-            "d": datetime.now(),
+            "d": str(datetime.now()),
             "g": ger,
             "t": tipo,
             "i": item,
@@ -157,7 +145,7 @@ def inserir():
     return redirect("/sistema")
 
 # ==========================================
-# CALCULO
+# IA CALCULO
 # ==========================================
 def calcular():
     df = pd.read_sql("SELECT * FROM movimentacao", engine)
@@ -169,33 +157,40 @@ def calcular():
 
     resultado = []
 
-    for (ger, item), g in df.groupby(["gerenciadora","item"]):
+    for (ger, item), grupo in df.groupby(["gerenciadora","item"]):
 
-        entrada = g[g["tipo"]=="ENTRADA"]["quantidade"].sum()
-        saida = g[g["tipo"]=="SAIDA"]["quantidade"].sum()
+        entrada = grupo[grupo["tipo"]=="ENTRADA"]["quantidade"].sum()
+        saida = grupo[grupo["tipo"]=="SAIDA"]["quantidade"].sum()
+
+        entrada = entrada if not pd.isna(entrada) else 0
+        saida = saida if not pd.isna(saida) else 0
+
         saldo = entrada - saida
 
-        mensal = g.groupby(g["data"].dt.to_period("M"))["quantidade"].sum()
+        mensal = grupo.groupby(grupo["data"].dt.to_period("M"))["quantidade"].sum()
         media = mensal.mean() if not mensal.empty else 0
+
         proj = int(media * 6 * 1.2)
 
-        status = "OK" if saldo >= proj else "COMPRAR"
+        status = "OK"
+        if saldo < proj:
+            status = "COMPRAR"
 
         resultado.append({
-            "ger":ger,
-            "item":item,
-            "entrada":int(entrada),
-            "saida":int(saida),
-            "saldo":int(saldo),
-            "media":int(media),
-            "proj":proj,
-            "status":status
+            "ger": ger,
+            "item": item,
+            "entrada": int(entrada),
+            "saida": int(saida),
+            "saldo": int(saldo),
+            "media": int(media),
+            "proj": int(proj),
+            "status": status
         })
 
     return resultado
 
 # ==========================================
-# SISTEMA
+# SISTEMA (MESMO VISUAL)
 # ==========================================
 @app.route("/sistema")
 def sistema():
@@ -203,13 +198,31 @@ def sistema():
         return redirect("/")
 
     dados = calcular()
-    grupos = {g:[] for g in GERENCIADORAS}
 
+    grupos = {g: [] for g in GERENCIADORAS}
     for d in dados:
         grupos[d["ger"]].append(d)
 
     html = """
-    <h1>ESTOQUE</h1>
+    <html>
+    <head>
+    <style>
+    body{font-family:Arial;background:#f4f4f4;text-align:center;}
+    table{width:95%;margin:20px auto;border-collapse:collapse;background:white;}
+    th,td{padding:8px;border:1px solid #ccc;}
+    th{background:black;color:white;}
+    .PRIME{background:#2e7d32;color:white;padding:10px;}
+    .LINK{background:#1565c0;color:white;padding:10px;}
+    .NEO{background:#00897b;color:white;padding:10px;}
+    .FITMOBY{background:#6a1b9a;color:white;padding:10px;}
+    .OUTROS{background:#ef6c00;color:white;padding:10px;}
+    form{background:white;padding:20px;width:400px;margin:auto;border-radius:10px;}
+    button{background:green;color:white;padding:10px;width:100%;}
+    </style>
+    </head>
+    <body>
+
+    <h1>📦 ESTOQUE INTELIGENTE</h1>
 
     <form method="POST" action="/inserir">
     <select name="ger">
@@ -221,40 +234,50 @@ def sistema():
     </select>
 
     <select name="tipo">
-    <option value="ENTRADA">ENTRADA</option>
-    <option value="SAIDA">SAIDA</option>
+    <option>ENTRADA</option>
+    <option>SAIDA</option>
     </select>
 
     <input name="item" placeholder="ITEM (MAIÚSCULO)" required>
     <input name="qtd" type="number" required>
-    <button>Inserir</button>
+
+    <button>INSERIR</button>
     </form>
 
-    <br><a href='/excel'>EXPORTAR EXCEL</a><br>
+    <br><a href="/excel">📊 EXPORTAR EXCEL</a><br>
     """
 
     if session["tipo"] == "admin":
-        html += "<br><a href='/criar_usuario'>CRIAR USUARIO</a><br>"
+        html += "<br><a href='/criar_usuario'>👤 CRIAR USUARIO</a><br>"
 
     for nome, lista in grupos.items():
-        html += f"<h3>{nome}</h3>"
-        html += "<table border=1><tr><th>ITEM</th><th>ENT</th><th>SAI</th><th>SALDO</th><th>MEDIA</th><th>6M</th><th>STATUS</th></tr>"
+        html += f"<div class='{nome}'>{nome}</div>"
+        html += """
+        <table>
+        <tr>
+        <th>ITEM</th><th>ENTRADA</th><th>SAIDA</th>
+        <th>SALDO</th><th>MÉDIA</th><th>6 MESES</th><th>STATUS</th>
+        </tr>
+        """
 
         for d in lista:
+            cor = "red" if d["saldo"] < 50 else "black"
+
             html += f"""
             <tr>
             <td>{d['item']}</td>
             <td>{d['entrada']}</td>
             <td>{d['saida']}</td>
-            <td>{d['saldo']}</td>
+            <td style='color:{cor}'>{d['saldo']}</td>
             <td>{d['media']}</td>
             <td>{d['proj']}</td>
             <td>{d['status']}</td>
             </tr>
             """
 
-        html += "</table><br>"
+        html += "</table>"
 
+    html += "</body></html>"
     return html
 
 # ==========================================
@@ -269,11 +292,7 @@ def excel():
 
     with pd.ExcelWriter(arquivo, engine="openpyxl") as writer:
         for ger in df["gerenciadora"].unique():
-            dfg = df[df["gerenciadora"]==ger]
-            mensal = dfg.groupby(
-                dfg["data"].dt.to_period("M")
-            )["quantidade"].sum()
-            mensal.to_excel(writer, sheet_name=ger)
+            df[df["gerenciadora"] == ger].to_excel(writer, sheet_name=ger)
 
     return send_file(arquivo, as_attachment=True)
 
