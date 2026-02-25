@@ -1,234 +1,262 @@
-import os
 from flask import Flask, request, redirect, session, send_file
-from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime, timedelta
+import psycopg2
+from datetime import datetime
 import pandas as pd
-from werkzeug.utils import secure_filename
+import os
 
 app = Flask(__name__)
-app.secret_key = "supersegredo"
+app.secret_key = "segredo"
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
 
 # ===============================
-# CONFIG DATABASE (RENDER)
+# CONEXÃO
 # ===============================
-app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL")
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-app.config["UPLOAD_FOLDER"] = "static/uploads"
-
-db = SQLAlchemy(app)
-
-if not os.path.exists("static/uploads"):
-    os.makedirs("static/uploads")
+def conectar():
+    return psycopg2.connect(DATABASE_URL)
 
 # ===============================
-# MODELOS
+# CRIAR TABELAS + ADMIN
 # ===============================
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(50), unique=True)
-    password = db.Column(db.String(50))
-    role = db.Column(db.String(20))
+def criar():
+    conn = conectar()
+    c = conn.cursor()
 
-class Item(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    nome = db.Column(db.String(100), unique=True)
-    gerenciadora = db.Column(db.String(50))
-    quantidade = db.Column(db.Integer, default=0)
-    imagem = db.Column(db.String(200))
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS usuarios(
+        usuario TEXT PRIMARY KEY,
+        senha TEXT,
+        tipo TEXT
+    )
+    """)
 
-class Movimentacao(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    item = db.Column(db.String(100))
-    tipo = db.Column(db.String(10))
-    quantidade = db.Column(db.Integer)
-    data = db.Column(db.DateTime, default=datetime.utcnow)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS movimentacao(
+        id SERIAL PRIMARY KEY,
+        data TIMESTAMP,
+        gerenciadora TEXT,
+        tipo TEXT,
+        item TEXT,
+        quantidade INTEGER
+    )
+    """)
 
-# ===============================
-# INIT
-# ===============================
-with app.app_context():
-    db.create_all()
-    if not User.query.filter_by(username="ADMIN").first():
-        admin = User(username="ADMIN", password="ADMIN", role="admin")
-        db.session.add(admin)
-        db.session.commit()
+    # cria admin se não existir
+    c.execute("""
+    INSERT INTO usuarios (usuario, senha, tipo)
+    VALUES ('admin','123','admin')
+    ON CONFLICT (usuario) DO NOTHING
+    """)
 
-# ===============================
-# FUNÇÕES
-# ===============================
-def validar_nome(nome, gerenciadora):
-    nome = nome.upper()
-    proibidas = ["PRIME", "LINK", "NEO", "FITMOB"]
-    if gerenciadora != "OUTROS":
-        for p in proibidas:
-            if p in nome:
-                return False
-    return nome
-
-def backup_auto():
-    itens = Item.query.all()
-    data = []
-    for i in itens:
-        data.append({
-            "Item": i.nome,
-            "Gerenciadora": i.gerenciadora,
-            "Quantidade": i.quantidade
-        })
-    df = pd.DataFrame(data)
-    df.to_excel("backup.xlsx", engine="openpyxl", index=False)
+    conn.commit()
+    conn.close()
 
 # ===============================
 # LOGIN
 # ===============================
-@app.route("/", methods=["GET", "POST"])
+@app.route("/", methods=["GET","POST"])
 def login():
     if request.method == "POST":
-        user = request.form["user"].upper()
-        senha = request.form["senha"]
-        u = User.query.filter_by(username=user, password=senha).first()
-        if u:
-            session["user"] = u.username
-            session["role"] = u.role
-            return redirect("/estoque")
+        u = request.form["usuario"]
+        s = request.form["senha"]
+
+        conn = conectar()
+        c = conn.cursor()
+
+        c.execute("SELECT * FROM usuarios WHERE usuario=%s AND senha=%s", (u,s))
+        user = c.fetchone()
+        conn.close()
+
+        if user:
+            session["user"] = u
+            session["tipo"] = user[2]
+            return redirect("/sistema")
+        else:
+            return "❌ Login inválido"
 
     return """
-    <body style='background:#f5f7fa;font-family:Arial'>
-    <div style='width:400px;margin:100px auto;background:white;padding:30px;border-radius:10px'>
-    <h2>Sistema de Estoque</h2>
-    <form method='post'>
-    Usuário:<br><input name='user' style='width:100%'><br><br>
-    Senha:<br><input type='password' name='senha' style='width:100%'><br><br>
-    <button style='width:100%;padding:10px;background:#007bff;color:white;border:none'>Entrar</button>
-    </form></div></body>
+    <h2>Login</h2>
+    <form method="post">
+    <input name="usuario" placeholder="Usuário"><br>
+    <input name="senha" type="password" placeholder="Senha"><br>
+    <button>Entrar</button>
+    </form>
     """
 
 # ===============================
-# ESTOQUE
+# SISTEMA
 # ===============================
-@app.route("/estoque", methods=["GET", "POST"])
-def estoque():
+@app.route("/sistema")
+def sistema():
     if "user" not in session:
         return redirect("/")
 
-    if request.method == "POST":
-        nome = request.form["nome"]
-        ger = request.form["gerenciadora"]
-        qtd = int(request.form["qtd"])
-        tipo = request.form["tipo"]
+    dados = calcular()
 
-        nome = validar_nome(nome, ger)
-        if not nome:
-            return "Nome inválido!"
+    grupos = {g: [] for g in GERENCIADORAS}
+    for d in dados:
+        grupos[d["ger"]].append(d)
 
-        imagem_path = None
-        if "imagem" in request.files:
-            img = request.files["imagem"]
-            if img.filename != "":
-                filename = secure_filename(img.filename)
-                imagem_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-                img.save(imagem_path)
+    html = """
+    <html>
+    <head>
+    <style>
+    body{font-family:Arial;background:#f4f4f4;text-align:center;}
+    table{width:95%;margin:20px auto;border-collapse:collapse;background:white;}
+    th,td{padding:8px;border:1px solid #ccc;}
+    th{background:black;color:white;}
+    .PRIME{background:#2e7d32;color:white;padding:10px;}
+    .LINK{background:#1565c0;color:white;padding:10px;}
+    .NEO{background:#00897b;color:white;padding:10px;}
+    .FITMOBY{background:#6a1b9a;color:white;padding:10px;}
+    .OUTROS{background:#ef6c00;color:white;padding:10px;}
+    form{background:white;padding:20px;width:400px;margin:auto;border-radius:10px;}
+    button{background:green;color:white;padding:10px;width:100%;}
+    </style>
+    </head>
+    <body>
 
-        item = Item.query.filter_by(nome=nome).first()
-        if not item:
-            item = Item(nome=nome, gerenciadora=ger, quantidade=0, imagem=imagem_path)
-            db.session.add(item)
+    <h1>📦 ESTOQUE INTELIGENTE</h1>
 
-        if tipo == "entrada":
-            item.quantidade += qtd
-        else:
-            item.quantidade -= qtd
-
-        mov = Movimentacao(item=nome, tipo=tipo, quantidade=qtd)
-        db.session.add(mov)
-
-        db.session.commit()
-        backup_auto()
-
-    itens = Item.query.all()
-
-    html = "<body style='background:#f5f7fa;font-family:Arial'>"
-    html += "<h1>Controle de Estoque</h1>"
-
-    for i in itens:
-        html += f"""
-        <div style='background:white;padding:10px;margin:5px;border-radius:8px'>
-        <b>{i.nome}</b> | {i.gerenciadora}<br>
-        Estoque: {i.quantidade}<br>
-        """
-        if i.imagem:
-            html += f"<a href='/{i.imagem}' target='_blank'>Ver Imagem</a>"
-        html += "</div>"
-
-    html += """
-    <h2>Movimentar Item</h2>
-    <form method="post" enctype="multipart/form-data">
-    Nome:<input name="nome"><br>
-    Gerenciadora:
-    <select name="gerenciadora">
+    <form method="POST" action="/inserir">
+    <select name="ger">
     <option>PRIME</option>
     <option>LINK</option>
     <option>NEO</option>
-    <option>FITMOB</option>
+    <option>FITMOBY</option>
     <option>OUTROS</option>
-    </select><br>
-    Quantidade:<input name="qtd"><br>
-    Tipo:
+    </select>
+
     <select name="tipo">
-    <option value="entrada">Entrada</option>
-    <option value="saida">Saída</option>
-    </select><br>
-    Imagem:<input type="file" name="imagem"><br><br>
-    <button>Salvar</button>
+    <option>ENTRADA</option>
+    <option>SAIDA</option>
+    </select>
+
+    <input name="item" placeholder="ITEM (MAIÚSCULO)" required>
+    <input name="qtd" type="number" required>
+
+    <button>INSERIR</button>
     </form>
-    <br><a href="/excel">Exportar Excel</a>
+
+    <br><a href="/excel">📊 EXPORTAR EXCEL</a><br>
     """
 
-    html += "</body>"
+    for nome, lista in grupos.items():
+        html += f"<div class='{nome}'>{nome}</div>"
+        html += """
+        <table>
+        <tr>
+        <th>ITEM</th><th>ENTRADA</th><th>SAIDA</th>
+        <th>SALDO</th><th>MÉDIA</th><th>6 MESES</th><th>STATUS</th>
+        </tr>
+        """
+
+        for d in lista:
+            cor = "red" if d["saldo"] < 50 else "black"
+
+            html += f"""
+            <tr>
+            <td>{d['item']}</td>
+            <td>{d['entrada']}</td>
+            <td>{d['saida']}</td>
+            <td style='color:{cor}'>{d['saldo']}</td>
+            <td>{d['media']}</td>
+            <td>{d['proj']}</td>
+            <td>{d['status']}</td>
+            </tr>
+            """
+
+        html += "</table>"
+
+    html += "</body></html>"
     return html
 
 # ===============================
-# EXCEL (SEM XLSXWRITER)
+# INSERIR
+# ===============================
+@app.route("/inserir", methods=["POST"])
+def inserir():
+    ger = request.form["ger"].upper()
+    tipo = request.form["tipo"].upper()
+    item = request.form["item"]
+    qtd = int(request.form["qtd"])
+
+    if item != item.upper():
+        return "❌ Use MAIÚSCULO"
+
+    for g in GERENCIADORAS:
+        if g in item:
+            return "❌ Não usar nome da gerenciadora no item"
+
+    conn = conectar()
+    c = conn.cursor()
+
+    c.execute("""
+    INSERT INTO movimentacao (data,gerenciadora,tipo,item,quantidade)
+    VALUES (%s,%s,%s,%s,%s)
+    """, (datetime.now(), ger, tipo, item, qtd))
+
+    conn.commit()
+    conn.close()
+
+    return redirect("/sistema")
+
+# ===============================
+# IA
+# ===============================
+def calcular():
+    conn = conectar()
+    df = pd.read_sql("SELECT * FROM movimentacao", conn)
+    conn.close()
+
+    if df.empty:
+        return []
+
+    resultado = []
+
+    for (ger, item), grupo in df.groupby(["gerenciadora","item"]):
+        entrada = grupo[grupo["tipo"]=="ENTRADA"]["quantidade"].sum()
+        saida = grupo[grupo["tipo"]=="SAIDA"]["quantidade"].sum()
+
+        entrada = entrada if not pd.isna(entrada) else 0
+        saida = saida if not pd.isna(saida) else 0
+
+        saldo = entrada - saida
+        media = saida / max(len(grupo),1)
+        proj = int(media * 6 * 1.2)
+
+        status = "OK" if saldo > proj else "COMPRAR"
+
+        resultado.append({
+            "ger": ger,
+            "item": item,
+            "entrada": int(entrada),
+            "saida": int(saida),
+            "saldo": int(saldo),
+            "media": int(media),
+            "proj": int(proj),
+            "status": status
+        })
+
+    return resultado
+
+# ===============================
+# EXCEL
 # ===============================
 @app.route("/excel")
 def excel():
-    writer = pd.ExcelWriter("estoque.xlsx", engine="openpyxl")
+    dados = calcular()
+    df = pd.DataFrame(dados)
 
-    gerenciadoras = ["PRIME", "LINK", "NEO", "FITMOB", "OUTROS"]
-
-    for g in gerenciadoras:
-        itens = Item.query.filter_by(gerenciadora=g).all()
-        data = []
-
-        for i in itens:
-            movs = Movimentacao.query.filter_by(item=i.nome).all()
-
-            entradas = sum(m.quantidade for m in movs if m.tipo == "entrada")
-            saidas = sum(m.quantidade for m in movs if m.tipo == "saida")
-
-            ultimos_6 = datetime.utcnow() - timedelta(days=180)
-            saidas_6 = sum(m.quantidade for m in movs if m.tipo == "saida" and m.data >= ultimos_6)
-
-            media = saidas_6 / 6 if saidas_6 else 0
-            previsao = media * 6 * 1.2
-
-            data.append({
-                "Item": i.nome,
-                "Estoque Atual": i.quantidade,
-                "Entradas Total": entradas,
-                "Saídas Total": saidas,
-                "Saídas Últimos 6M": saidas_6,
-                "Estimativa Próx 6M +20%": round(previsao)
-            })
-
-        df = pd.DataFrame(data)
-        df.to_excel(writer, sheet_name=g, index=False)
-
-    writer.close()
+    df.to_excel("estoque.xlsx", index=False)
     return send_file("estoque.xlsx", as_attachment=True)
 
 # ===============================
-# RENDER PORT FIX
+# START (RENDER)
 # ===============================
 if __name__ == "__main__":
+    criar()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
