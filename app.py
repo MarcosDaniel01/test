@@ -3,20 +3,33 @@ from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 import pandas as pd
 import os
+import urllib.parse
 
 app = Flask(__name__)
 app.secret_key = "segredo_super_sistema"
 
 # =========================
-# CONFIG BANCO (Render)
+# CONFIG BANCO (RENDER FIX DEFINITIVO)
 # =========================
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+if DATABASE_URL:
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL or "sqlite:///banco.db"
+    url = urllib.parse.urlparse(DATABASE_URL)
+
+    app.config["SQLALCHEMY_DATABASE_URI"] = (
+        f"postgresql+psycopg2://{url.username}:{url.password}@{url.hostname}:{url.port}{url.path}"
+    )
+else:
+    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///banco.db"
+
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+    "pool_pre_ping": True,
+}
 
 db = SQLAlchemy(app)
 
@@ -39,7 +52,7 @@ class Movimentacao(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     data = db.Column(db.String(50))
     usuario = db.Column(db.String(50))
-    tipo = db.Column(db.String(10))  # entrada ou saida
+    tipo = db.Column(db.String(10))
     item = db.Column(db.String(100))
     quantidade = db.Column(db.Integer)
 
@@ -49,7 +62,7 @@ class Movimentacao(db.Model):
 with app.app_context():
     db.create_all()
 
-    if not Usuario.query.filter_by(usuario="admin").first():
+    if not db.session.query(Usuario).filter(Usuario.usuario == "admin").first():
         admin = Usuario(usuario="admin", senha="123", tipo="admin")
         db.session.add(admin)
         db.session.commit()
@@ -63,7 +76,10 @@ def login():
         user = request.form["usuario"]
         senha = request.form["senha"]
 
-        u = Usuario.query.filter_by(usuario=user, senha=senha).first()
+        u = db.session.query(Usuario).filter(
+            Usuario.usuario == user,
+            Usuario.senha == senha
+        ).first()
 
         if u:
             session["user"] = u.usuario
@@ -89,7 +105,7 @@ def sistema():
     if "user" not in session:
         return redirect("/")
 
-    estoque = Estoque.query.all()
+    estoque = db.session.query(Estoque).all()
 
     html = """
     <h1>SISTEMA DE ESTOQUE</h1>
@@ -151,7 +167,7 @@ def movimentar():
     qtd = int(request.form["qtd"])
     tipo = request.form["tipo"]
 
-    estoque = Estoque.query.filter_by(item=item).first()
+    estoque = db.session.query(Estoque).filter(Estoque.item == item).first()
 
     if not estoque:
         estoque = Estoque(item=item, quantidade=0)
@@ -189,7 +205,7 @@ def criar_usuario():
     senha = request.form["senha"]
     tipo = request.form["tipo"]
 
-    if Usuario.query.filter_by(usuario=user).first():
+    if db.session.query(Usuario).filter(Usuario.usuario == user).first():
         return "Usuário já existe"
 
     novo = Usuario(usuario=user, senha=senha, tipo=tipo)
@@ -211,7 +227,7 @@ def logout():
 # =========================
 @app.route("/excel")
 def excel():
-    movs = Movimentacao.query.all()
+    movs = db.session.query(Movimentacao).all()
 
     lista = []
     for m in movs:
@@ -233,7 +249,7 @@ def excel():
 # =========================
 @app.route("/backup")
 def backup():
-    estoque = Estoque.query.all()
+    estoque = db.session.query(Estoque).all()
 
     lista = []
     for e in estoque:
