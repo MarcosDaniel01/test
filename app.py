@@ -9,7 +9,7 @@ app = Flask(__name__)
 app.secret_key = "segredo"
 
 # =========================
-# BANCO (RENDER)
+# BANCO
 # =========================
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -41,7 +41,7 @@ class Movimentacao(db.Model):
 GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
 
 # =========================
-# INIT BANCO (SEGURO)
+# INIT BANCO
 # =========================
 with app.app_context():
     try:
@@ -192,7 +192,6 @@ def sistema():
             html += f"<tr><td>{d['item']}</td><td>{d['saldo']}</td><td>{d['status']}</td></tr>"
         html += "</table>"
 
-    # 🔥 FIX JSON (NÃO QUEBRA MAIS)
     html += """
     <script>
     const itens = """ + json.dumps(itens_existentes) + """;
@@ -296,4 +295,4 @@ def excel():
     df = pd.DataFrame(dados)
     arquivo = "estoque.xlsx"
     df.to_excel(arquivo, index=False)
-    return send_file(arquivo, as_attachment=True)9
+    return send_file(arquivo, as_attachment=True)
