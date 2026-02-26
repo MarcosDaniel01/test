@@ -1,19 +1,12 @@
-from flask import Flask, request, redirect, session, send_file
+from flask import Flask, request, redirect, session
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
-import pandas as pd
 import os
 import json
 
-# =========================
-# APP (PRIMEIRO!)
-# =========================
 app = Flask(__name__)
 app.secret_key = "segredo"
 
-# =========================
-# BANCO (RENDER OK)
-# =========================
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if DATABASE_URL:
@@ -47,7 +40,7 @@ class Movimentacao(db.Model):
 GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
 
 # =========================
-# INIT BANCO
+# INIT
 # =========================
 with app.app_context():
     db.create_all()
@@ -92,7 +85,7 @@ def login():
     """
 
 # =========================
-# SISTEMA (CORRIGIDO)
+# SISTEMA
 # =========================
 @app.route("/sistema")
 def sistema():
@@ -101,21 +94,18 @@ def sistema():
 
     dados = calcular()
 
-    # separar por gerenciadora
     grupos = {}
     for d in dados:
         grupos.setdefault(d["ger"], []).append(d)
 
-    # itens para operador
     itens = {}
     for d in Movimentacao.query.all():
         itens.setdefault(d.gerenciadora, set()).add(d.item)
 
     itens = {k:list(v) for k,v in itens.items()}
 
-    # campo item
     if session["tipo"] == "admin":
-        campo_item = "<input name='item' required>"
+        campo_item = "<input name='item' required placeholder='Novo item'>"
     else:
         campo_item = "<select name='item' id='itemSelect'></select>"
 
@@ -123,15 +113,32 @@ def sistema():
     <html>
     <style>
     body{{margin:0;font-family:Arial;background:#eef2f7}}
+
     .topbar{{background:linear-gradient(90deg,#1e3c72,#2a5298);
     color:white;padding:20px;text-align:center;font-size:22px}}
-    .card{{background:white;margin:20px;padding:20px;border-radius:10px}}
+
+    .card{{background:white;margin:20px;padding:20px;border-radius:12px;
+    box-shadow:0 4px 10px rgba(0,0,0,0.1)}}
+
     table{{width:100%;border-collapse:collapse}}
     th{{background:#2a5298;color:white}}
-    td,th{{padding:8px;text-align:center;border-bottom:1px solid #ddd}}
-    button{{padding:8px;background:#2a5298;color:white;border:none;border-radius:6px}}
-    input,select{{padding:8px;margin:5px;width:100%}}
-    .ok{{color:green}} .comprar{{color:red}}
+    td,th{{padding:10px;text-align:center;border-bottom:1px solid #ddd}}
+
+    button{{padding:10px;background:#2a5298;color:white;border:none;border-radius:8px}}
+    input,select{{padding:10px;margin:5px;width:100%;border-radius:6px;border:1px solid #ccc}}
+
+    .ok{{color:green;font-weight:bold}}
+    .comprar{{color:red;font-weight:bold}}
+
+    .gerenciadora{{margin-top:30px;border-radius:12px;overflow:hidden}}
+    .titulo{{padding:12px;color:white;font-weight:bold}}
+
+    .PRIME{{background:#007bff}}
+    .LINK{{background:#28a745}}
+    .NEO{{background:#6f42c1}}
+    .FITMOBY{{background:#fd7e14}}
+    .OUTROS{{background:#343a40}}
+
     </style>
 
     <div class="topbar">📦 ESTOQUE | {session["user"]}</div>
@@ -149,26 +156,54 @@ def sistema():
 
     {campo_item}
 
-    <input name="qtd" type="number" required>
+    <input name="qtd" type="number" required placeholder="Quantidade">
     <button>Salvar</button>
     </form>
     </div>
     """
 
-    # estoque separado
+    # =========================
+    # ESTOQUE BONITO
+    # =========================
     for g in GERENCIADORAS:
         lista = grupos.get(g, [])
 
-        html += f"<div class='card'><h3>{g}</h3><table>"
-        html += "<tr><th>Item</th><th>Entrada</th><th>Saída</th><th>Saldo</th><th>Média</th><th>6M+20%</th><th>Status</th></tr>"
+        html += f"""
+        <div class="card gerenciadora">
+        <div class="titulo {g}">🏢 {g}</div>
+
+        <table>
+        <tr>
+        <th>Item</th>
+        <th>Entrada Mensal</th>
+        <th>Saída Mensal</th>
+        <th>Saldo Mensal</th>
+        <th>Média</th>
+        <th>Previsão 6 Meses + 20%</th>
+        <th>Status</th>
+        </tr>
+        """
 
         for d in lista:
             cls = "ok" if d["status"]=="OK" else "comprar"
-            html += f"<tr><td>{d['item']}</td><td>{d['entrada']}</td><td>{d['saida']}</td><td>{d['saldo']}</td><td>{d['media']}</td><td>{d['proj']}</td><td class='{cls}'>{d['status']}</td></tr>"
+
+            html += f"""
+            <tr>
+            <td>{d['item']}</td>
+            <td>{d['entrada']}</td>
+            <td>{d['saida']}</td>
+            <td>{d['saldo']}</td>
+            <td>{d['media']}</td>
+            <td>{d['proj']}</td>
+            <td class="{cls}">{d['status']}</td>
+            </tr>
+            """
 
         html += "</table></div>"
 
+    # =========================
     # ADMIN
+    # =========================
     if session["tipo"] == "admin":
         usuarios = Usuario.query.all()
         linhas=""
@@ -193,10 +228,10 @@ def sistema():
         <h3>Usuários</h3>
         <table><tr><th>Nome</th><th>Tipo</th><th>Ação</th></tr>{linhas}</table>
 
-        <h3>Criar</h3>
+        <h3>Criar Usuário</h3>
         <form method="POST" action="/criar_usuario">
-        <input name="usuario" required>
-        <input name="senha" required>
+        <input name="usuario" required placeholder="Usuário">
+        <input name="senha" required placeholder="Senha">
         <select name="tipo">
         <option value="admin">Admin</option>
         <option value="operador">Operador</option>
@@ -206,7 +241,6 @@ def sistema():
         </div>
         """
 
-    # JS corrigido
     html += f"""
     <script>
     const itens = {json.dumps(itens)};
@@ -232,7 +266,7 @@ def sistema():
     return html
 
 # =========================
-# INSERIR
+# ROTAS
 # =========================
 @app.route("/inserir", methods=["POST"])
 def inserir():
@@ -245,9 +279,6 @@ def inserir():
     db.session.commit()
     return redirect("/sistema")
 
-# =========================
-# CRIAR USUARIO
-# =========================
 @app.route("/criar_usuario", methods=["POST"])
 def criar_usuario():
     if session.get("tipo") != "admin":
@@ -265,20 +296,17 @@ def criar_usuario():
 
     return redirect("/sistema")
 
-# =========================
-# EXCLUIR USUARIO
-# =========================
 @app.route("/excluir_usuario", methods=["POST"])
 def excluir_usuario():
     if session.get("tipo") != "admin":
         return redirect("/")
 
-    user = request.form["usuario"]
+    saldo = request.form["usuario"]
 
-    if user == "admin" or user == session["user"]:
+    if saldo == "admin" or saldo == session["user"]:
         return redirect("/sistema")
 
-    u = Usuario.query.filter_by(usuario=user).first()
+    u = Usuario.query.filter_by(usuario=saldo).first()
     if u:
         db.session.delete(u)
         db.session.commit()
@@ -324,8 +352,5 @@ def calcular():
 
     return final
 
-# =========================
-# START (RENDER)
-# =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
