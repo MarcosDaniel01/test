@@ -113,33 +113,24 @@ def sistema():
     <html>
     <style>
     body{{margin:0;font-family:Arial;background:#eef2f7}}
-
     .topbar{{background:linear-gradient(90deg,#1e3c72,#2a5298);
     color:white;padding:20px;text-align:center;font-size:22px}}
-
     .card{{background:white;margin:20px;padding:20px;border-radius:12px;
     box-shadow:0 4px 10px rgba(0,0,0,0.1)}}
-
     table{{width:100%;border-collapse:collapse}}
     th{{background:#2a5298;color:white}}
     td,th{{padding:10px;text-align:center;border-bottom:1px solid #ddd}}
-
-    button{{padding:10px;background:#2a5298;color:white;border:none;border-radius:8px}}
+    button{{padding:10px;background:#2a5298;color:white;border:none;border-radius:8px;cursor:pointer}}
     input,select{{padding:10px;margin:5px;width:100%;border-radius:6px;border:1px solid #ccc}}
-
     .ok{{color:green;font-weight:bold}}
     .comprar{{color:red;font-weight:bold}}
-
     .gerenciadora{{margin-top:30px;border-radius:12px;overflow:hidden}}
     .titulo{{padding:12px;color:white;font-weight:bold}}
-
-    /* CORES ATUALIZADAS */
-    .PRIME{{background:#28a745}}    /* Verde */
-    .NEO{{background:#fd7e14}}      /* Laranja */
-    .LINK{{background:#004085}}     /* Azul Escuro */
-    .FITMOBY{{background:#6f42c1}}  /* Roxo */
-    .OUTROS{{background:#dc3545}}   /* Vermelho */
-
+    .PRIME{{background:#28a745}}
+    .NEO{{background:#fd7e14}}
+    .LINK{{background:#004085}}
+    .FITMOBY{{background:#6f42c1}}
+    .OUTROS{{background:#dc3545}}
     </style>
 
     <div class="topbar">📦 CONTROLE DE ESTOQUE | {session["user"]}</div>
@@ -149,14 +140,11 @@ def sistema():
     <select name="ger" id="gerSelect">
     {"".join([f"<option>{g}</option>" for g in GERENCIADORAS])}
     </select>
-
     <select name="tipo">
     <option value="ENTRADA">ENTRADA</option>
     <option value="SAIDA">SAÍDA</option>
     </select>
-
     {campo_item}
-
     <input name="qtd" type="number" required placeholder="Quantidade">
     <button>Salvar Movimentação</button>
     </form>
@@ -165,11 +153,11 @@ def sistema():
 
     for g in GERENCIADORAS:
         lista = grupos.get(g, [])
+        coluna_acao_head = "<th>Ação</th>" if session["tipo"] == "admin" else ""
 
         html += f"""
         <div class="card gerenciadora">
         <div class="titulo {g}">🏢 {g}</div>
-
         <table>
         <tr>
         <th>Item</th>
@@ -179,11 +167,28 @@ def sistema():
         <th>Média Mensal</th>
         <th>Previsão (6 Meses + 20%)</th>
         <th>Status</th>
+        {coluna_acao_head}
         </tr>
         """
 
         for d in lista:
             cls = "ok" if d["status"]=="OK" else "comprar"
+            
+            # Botão de exclusão de item para Admin
+            coluna_acao_corpo = ""
+            if session["tipo"] == "admin":
+                coluna_acao_corpo = f"""
+                <td>
+                    <form method="POST" action="/excluir_item" style="margin:0">
+                        <input type="hidden" name="ger" value="{d['ger']}">
+                        <input type="hidden" name="item" value="{d['item']}">
+                        <button style="background:#dc3545; padding:5px 10px; font-size:12px" 
+                                onclick="return confirm('Excluir todo o histórico de {d['item']}?')">
+                            🗑️
+                        </button>
+                    </form>
+                </td>
+                """
 
             html += f"""
             <tr>
@@ -194,6 +199,7 @@ def sistema():
             <td>{d['media']}</td>
             <td>{d['proj']}</td>
             <td class="{cls}">{d['status']}</td>
+            {coluna_acao_corpo}
             </tr>
             """
 
@@ -210,7 +216,7 @@ def sistema():
                 acao="VOCÊ"
             else:
                 acao=f"""
-                <form method='POST' action='/excluir_usuario'>
+                <form method='POST' action='/excluir_usuario' style='margin:0'>
                 <input type='hidden' name='usuario' value='{u.usuario}'>
                 <button style='background:red'>Excluir</button>
                 </form>
@@ -260,6 +266,9 @@ def sistema():
 
     return html
 
+# =========================
+# ROTAS DE AÇÃO
+# =========================
 @app.route("/inserir", methods=["POST"])
 def inserir():
     db.session.add(Movimentacao(
@@ -268,6 +277,19 @@ def inserir():
         item=request.form["item"].upper(),
         quantidade=int(request.form["qtd"])
     ))
+    db.session.commit()
+    return redirect("/sistema")
+
+@app.route("/excluir_item", methods=["POST"])
+def excluir_item():
+    if session.get("tipo") != "admin":
+        return redirect("/")
+
+    ger = request.form["ger"]
+    item = request.form["item"]
+
+    # Remove todas as movimentações ligadas a esse item específico daquela gerenciadora
+    Movimentacao.query.filter_by(gerenciadora=ger, item=item).delete()
     db.session.commit()
     return redirect("/sistema")
 
