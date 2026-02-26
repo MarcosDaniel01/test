@@ -313,3 +313,6 @@ def excel():
     arquivo = "estoque.xlsx"
     df.to_excel(arquivo, index=False)
     return send_file(arquivo, as_attachment=True)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
