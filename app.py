@@ -97,7 +97,7 @@ def login():
     """
 
 # =========================
-# CALCULO ESTOQUE
+# CALCULO
 # =========================
 def calcular():
     dados = Movimentacao.query.all()
@@ -135,7 +135,7 @@ def calcular():
     return final
 
 # =========================
-# ITENS EXISTENTES
+# ITENS
 # =========================
 def itens_por_gerenciadora():
     dados = Movimentacao.query.all()
@@ -166,51 +166,7 @@ def sistema():
     else:
         campo_item = '<select name="item" id="itemSelect"></select>'
 
-    # ===== USUÁRIOS =====
-    usuarios_html = ""
-    if session["tipo"] == "admin":
-        usuarios = Usuario.query.all()
-        linhas = ""
-
-        for u in usuarios:
-            if u.usuario == "admin":
-                botao = "ADMIN"
-            elif u.usuario == session["user"]:
-                botao = "VOCÊ"
-            else:
-                botao = f"""
-                <form method='POST' action='/excluir_usuario'>
-                <input type='hidden' name='usuario' value='{u.usuario}'>
-                <button style='background:red'>Excluir</button>
-                </form>
-                """
-
-            linhas += f"<tr><td>{u.usuario}</td><td>{u.tipo}</td><td>{botao}</td></tr>"
-
-        usuarios_html = f"""
-        <div class='card'>
-        <h3>Usuários</h3>
-        <table>
-        <tr><th>Usuário</th><th>Tipo</th><th>Ação</th></tr>
-        {linhas}
-        </table>
-        </div>
-
-        <div class='card'>
-        <h3>Criar Usuário</h3>
-        <form method="POST" action="/criar_usuario">
-        <input name="usuario" required>
-        <input name="senha" required>
-        <select name="tipo">
-        <option value="admin">Admin</option>
-        <option value="operador">Operador</option>
-        </select>
-        <button>Criar</button>
-        </form>
-        </div>
-        """
-
-    return f"""
+    html = f"""
     <html>
     <head>
     <style>
@@ -232,7 +188,7 @@ def sistema():
     <body>
 
     <div class="topbar">
-        📦 ESTOQUE INTELIGENTE | {session["user"].upper()}
+        📦 ESTOQUE | {session["user"].upper()}
     </div>
 
     <div class="container">
@@ -256,10 +212,9 @@ def sistema():
 
     <br><a href="/excel">📊 Exportar Excel</a>
     </div>
-
-    {usuarios_html}
     """
 
+    # ===== TABELAS =====
     for nome, lista in grupos.items():
         html += f"<div class='card'><h3>{nome}</h3><table>"
         html += "<tr><th>ITEM</th><th>SALDO</th><th>STATUS</th></tr>"
@@ -270,6 +225,7 @@ def sistema():
 
         html += "</table></div>"
 
+    # ===== SCRIPT CORRIGIDO =====
     html += f"""
     </div>
 
@@ -281,15 +237,15 @@ def sistema():
     function atualizar(){{
         if(!item) return;
         item.innerHTML="";
-        (itens[ger.value]||[]).forEach(i=>{
-            let o=document.createElement("option");
-            o.text=i;
+        (itens[ger.value] || []).forEach(i => {{
+            let o = document.createElement("option");
+            o.text = i;
             item.add(o);
-        });
+        }});
     }}
 
-    ger.onchange=atualizar;
-    window.onload=atualizar;
+    ger.onchange = atualizar;
+    window.onload = atualizar;
     </script>
 
     </body></html>
@@ -323,51 +279,11 @@ def inserir():
     return redirect("/sistema")
 
 # =========================
-# USUÁRIOS
-# =========================
-@app.route("/criar_usuario", methods=["POST"])
-def criar_usuario():
-    if session.get("tipo") != "admin":
-        return redirect("/")
-
-    u = request.form["usuario"]
-
-    if Usuario.query.filter_by(usuario=u).first():
-        return "Já existe"
-
-    db.session.add(Usuario(
-        usuario=u,
-        senha=request.form["senha"],
-        tipo=request.form["tipo"]
-    ))
-
-    db.session.commit()
-    return redirect("/sistema")
-
-@app.route("/excluir_usuario", methods=["POST"])
-def excluir_usuario():
-    if session.get("tipo") != "admin":
-        return redirect("/")
-
-    u = request.form["usuario"]
-
-    if u == "admin" or u == session["user"]:
-        return "Não permitido"
-
-    user = Usuario.query.filter_by(usuario=u).first()
-    if user:
-        db.session.delete(user)
-        db.session.commit()
-
-    return redirect("/sistema")
-
-# =========================
 # EXCEL
 # =========================
 @app.route("/excel")
 def excel():
-    dados = calcular()
-    df = pd.DataFrame(dados)
+    df = pd.DataFrame(calcular())
     arquivo = "estoque.xlsx"
     df.to_excel(arquivo, index=False)
     return send_file(arquivo, as_attachment=True)
