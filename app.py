@@ -107,6 +107,7 @@ def login():
         font-weight:bold;
         cursor:pointer;
     }
+    button:hover{background:#1e3c72;}
     </style>
     </head>
     <body>
@@ -140,7 +141,7 @@ def itens_por_gerenciadora():
     return {g: sorted(list(v)) for g, v in itens.items()}
 
 # =========================
-# SISTEMA
+# SISTEMA BONITO
 # =========================
 @app.route("/sistema")
 def sistema():
@@ -161,38 +162,92 @@ def sistema():
 
     html = f"""
     <html>
-    <body style='font-family:Arial;background:#f4f4f4;text-align:center;'>
+    <head>
+    <style>
+    body{{margin:0;font-family:Arial;background:#f1f4f9;}}
 
-    <h1>📦 ESTOQUE</h1>
+    .topbar{{background:linear-gradient(90deg,#1e3c72,#2a5298);
+    color:white;padding:20px;text-align:center;font-size:22px;font-weight:bold;}}
 
-    <form method="POST" action="/inserir">
-    <select name="ger" id="gerSelect">
-    {''.join([f"<option>{g}</option>" for g in GERENCIADORAS])}
-    </select>
+    .container{{width:95%;margin:auto;}}
 
-    <select name="tipo">
-    <option>ENTRADA</option>
-    <option>SAIDA</option>
-    </select>
+    .card{{background:white;padding:20px;margin:20px auto;
+    border-radius:12px;box-shadow:0 5px 15px rgba(0,0,0,0.1);max-width:500px;}}
 
-    {campo_item}
+    select,input{{width:100%;padding:10px;margin:8px 0;
+    border-radius:8px;border:1px solid #ccc;}}
 
-    <input name="qtd" type="number" required>
+    button{{width:100%;padding:12px;background:#2a5298;
+    color:white;border:none;border-radius:8px;font-weight:bold;cursor:pointer;}}
 
-    <button>INSERIR</button>
-    </form>
+    button:hover{{background:#1e3c72;}}
 
-    <br><a href="/excel">EXPORTAR</a>
+    table{{width:100%;border-collapse:collapse;margin:20px 0;
+    background:white;border-radius:12px;overflow:hidden;
+    box-shadow:0 5px 15px rgba(0,0,0,0.1);}}
+
+    th{{background:#2a5298;color:white;padding:10px;}}
+    td{{padding:10px;text-align:center;border-bottom:1px solid #eee;}}
+
+    .ok{{color:green;font-weight:bold;}}
+    .comprar{{color:red;font-weight:bold;}}
+    .ger-title{{margin-top:40px;font-size:20px;font-weight:bold;color:#1e3c72;}}
+    a{{text-decoration:none;color:#2a5298;font-weight:bold;}}
+    </style>
+    </head>
+    <body>
+
+    <div class="topbar">
+        📦 ESTOQUE INTELIGENTE | Usuário: {session["user"].upper()}
+    </div>
+
+    <div class="container">
+        <div class="card">
+            <form method="POST" action="/inserir">
+                <select name="ger" id="gerSelect">
+                    {''.join([f"<option>{g}</option>" for g in GERENCIADORAS])}
+                </select>
+
+                <select name="tipo">
+                    <option>ENTRADA</option>
+                    <option>SAIDA</option>
+                </select>
+
+                {campo_item}
+
+                <input name="qtd" type="number" required>
+
+                <button>INSERIR MOVIMENTAÇÃO</button>
+            </form>
+            <br>
+            <a href="/excel">📊 Exportar Excel</a>
+        </div>
     """
 
     for nome, lista in grupos.items():
-        html += f"<h2>{nome}</h2><table border=1 style='margin:auto'>"
-        html += "<tr><th>ITEM</th><th>SALDO</th><th>STATUS</th></tr>"
+        html += f"<div class='ger-title'>{nome}</div>"
+        html += """
+        <table>
+        <tr>
+        <th>ITEM</th>
+        <th>SALDO</th>
+        <th>STATUS</th>
+        </tr>
+        """
         for d in lista:
-            html += f"<tr><td>{d['item']}</td><td>{d['saldo']}</td><td>{d['status']}</td></tr>"
+            classe = "ok" if d["status"] == "OK" else "comprar"
+            html += f"""
+            <tr>
+                <td>{d['item']}</td>
+                <td>{d['saldo']}</td>
+                <td class='{classe}'>{d['status']}</td>
+            </tr>
+            """
         html += "</table>"
 
     html += """
+    </div>
+
     <script>
     const itens = """ + json.dumps(itens_existentes) + """;
 
@@ -216,9 +271,11 @@ def sistema():
     gerSelect.addEventListener("change", atualizarItens);
     window.onload = atualizarItens;
     </script>
+
+    </body>
+    </html>
     """
 
-    html += "</body></html>"
     return html
 
 # =========================
