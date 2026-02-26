@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, session
+from flask import Flask, request, redirect, session
 from flask_sqlalchemy import SQLAlchemy
 import os
 
@@ -6,7 +6,7 @@ app = Flask(__name__)
 app.secret_key = "123"
 
 # ==============================
-# BANCO (FUNCIONA LOCAL E RENDER)
+# CONFIG BANCO (Render + Local)
 # ==============================
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -44,10 +44,11 @@ class Movimentacao(db.Model):
     quantidade = db.Column(db.Integer)
 
 # ==============================
-# CRIA BANCO + ADMIN
+# RESET TOTAL (REMOVE TABELAS ANTIGAS)
 # ==============================
 with app.app_context():
-    db.create_all()
+    db.drop_all()      # remove estrutura antiga quebrada
+    db.create_all()    # cria estrutura nova correta
 
     if not Usuario.query.filter_by(usuario="admin").first():
         admin = Usuario(usuario="admin", senha="123", tipo="admin")
@@ -92,7 +93,6 @@ def menu():
     return f"""
     <body style="background:white;text-align:center;">
         <h2>Bem-vindo {session['user']}</h2>
-
         <a href="/entrada">Entrada</a><br><br>
         <a href="/saida">Saída</a><br><br>
         <a href="/usuarios">Criar Usuário</a><br><br>
@@ -184,12 +184,10 @@ def usuarios():
         <form method="post">
             <input name="usuario" placeholder="Usuário"><br><br>
             <input name="senha" placeholder="Senha"><br><br>
-            
             <select name="tipo">
                 <option value="admin">Admin</option>
                 <option value="operador">Operador</option>
             </select><br><br>
-
             <button>Criar</button>
         </form>
     </body>
@@ -204,7 +202,7 @@ def logout():
     return redirect("/")
 
 # ==============================
-# RUN (RENDER)
+# RUN
 # ==============================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
