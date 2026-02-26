@@ -6,17 +6,20 @@ import os
 import json
 
 app = Flask(__name__)
-app.secret_key = "segredo_super"
+app.secret_key = "segredo"
 
 # =========================
-# BANCO (Render compatível)
+# BANCO (RENDER OK)
 # =========================
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://")
+if DATABASE_URL:
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://")
+else:
+    DATABASE_URL = "sqlite:///local.db"
 
-app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL or "sqlite:///local.db"
+app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
@@ -26,13 +29,13 @@ db = SQLAlchemy(app)
 # =========================
 class Usuario(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    usuario = db.Column(db.String(50), unique=True, nullable=False)
-    senha = db.Column(db.String(50), nullable=False)
-    tipo = db.Column(db.String(20), nullable=False)
+    usuario = db.Column(db.String(50), unique=True)
+    senha = db.Column(db.String(50))
+    tipo = db.Column(db.String(20))
 
 class Movimentacao(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    data = db.Column(db.DateTime, default=datetime.utcnow)
+    data = db.Column(db.DateTime, default=datetime.now)
     gerenciadora = db.Column(db.String(50))
     tipo = db.Column(db.String(10))
     item = db.Column(db.String(100))
@@ -41,7 +44,7 @@ class Movimentacao(db.Model):
 GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
 
 # =========================
-# INICIALIZAÇÃO
+# INIT
 # =========================
 with app.app_context():
     db.create_all()
@@ -50,92 +53,43 @@ with app.app_context():
         db.session.commit()
 
 # =========================
-# LOGIN
+# LOGIN BONITO
 # =========================
-@app.route("/", methods=["GET", "POST"])
+@app.route("/", methods=["GET","POST"])
 def login():
-    erro = ""
     if request.method == "POST":
-        user = Usuario.query.filter_by(
-            usuario=request.form["usuario"],
-            senha=request.form["senha"]
-        ).first()
+        u = request.form["usuario"]
+        s = request.form["senha"]
+
+        user = Usuario.query.filter_by(usuario=u, senha=s).first()
 
         if user:
-            session["user"] = user.usuario
+            session["user"] = u
             session["tipo"] = user.tipo
             return redirect("/sistema")
-        else:
-            erro = "Usuário ou senha inválidos"
 
-    return f"""
+    return """
     <html>
     <head>
     <style>
-    body{{margin:0;font-family:Arial;background:linear-gradient(135deg,#1e3c72,#2a5298);
-    display:flex;justify-content:center;align-items:center;height:100vh;}}
-    .box{{background:white;padding:40px;border-radius:15px;width:350px;text-align:center;}}
-    input{{width:100%;padding:10px;margin:10px 0;border-radius:8px;border:1px solid #ccc;}}
-    button{{width:100%;padding:12px;background:#2a5298;color:white;border:none;border-radius:8px;font-weight:bold;}}
-    .erro{{color:red;}}
+    body{font-family:Arial;background:linear-gradient(120deg,#2980b9,#6dd5fa);display:flex;justify-content:center;align-items:center;height:100vh;}
+    .box{background:white;padding:40px;border-radius:12px;width:300px;text-align:center;}
+    input{width:100%;padding:10px;margin:10px 0;border-radius:8px;border:1px solid #ccc;}
+    button{background:#2980b9;color:white;padding:10px;width:100%;border:none;border-radius:8px;}
     </style>
     </head>
     <body>
     <div class="box">
-        <h2>📦 ESTOQUE INTELIGENTE</h2>
-        <div class="erro">{erro}</div>
-        <form method="post">
-            <input name="usuario" placeholder="Usuário" required>
-            <input name="senha" type="password" placeholder="Senha" required>
-            <button>Entrar</button>
-        </form>
+    <h2>Login</h2>
+    <form method="post">
+    <input name="usuario" placeholder="Usuário">
+    <input name="senha" type="password" placeholder="Senha">
+    <button>Entrar</button>
+    </form>
     </div>
     </body>
     </html>
     """
-
-# =========================
-# CÁLCULO ESTOQUE
-# =========================
-def calcular():
-    dados = Movimentacao.query.all()
-    resultado = {}
-
-    for d in dados:
-        chave = (d.gerenciadora, d.item)
-        if chave not in resultado:
-            resultado[chave] = {"entrada":0,"saida":0}
-
-        if d.tipo == "ENTRADA":
-            resultado[chave]["entrada"] += d.quantidade
-        else:
-            resultado[chave]["saida"] += d.quantidade
-
-    final = []
-
-    for (ger,item),v in resultado.items():
-        saldo = v["entrada"] - v["saida"]
-
-        entrada_mensal = v["entrada"]
-        saida_mensal = v["saida"]
-
-        previsao6 = int((saida_mensal * 6) * 1.2)
-
-        status = "OK"
-        if saldo < previsao6:
-            status = "COMPRAR"
-
-        final.append({
-            "ger":ger,
-            "item":item,
-            "saldo":saldo,
-            "entrada_mensal":entrada_mensal,
-            "saida_mensal":saida_mensal,
-            "previsao6":previsao6,
-            "status":status
-        })
-
-    return final
 
 # =========================
 # SISTEMA
@@ -146,103 +100,47 @@ def sistema():
         return redirect("/")
 
     dados = calcular()
-    grupos = {g:[] for g in GERENCIADORAS}
-    for d in dados:
-        grupos[d["ger"]].append(d)
 
-    html = f"""
-    <html>
-    <head>
-    <style>
-    body{{margin:0;font-family:Arial;background:#f1f4f9;}}
-    .topbar{{background:#2a5298;color:white;padding:20px;text-align:center;font-size:22px;}}
-    .container{{width:95%;margin:auto;}}
-    .card{{background:white;padding:20px;margin:20px auto;border-radius:12px;
-    box-shadow:0 5px 15px rgba(0,0,0,0.1);max-width:1100px;}}
-    input,select{{padding:8px;margin:5px;border-radius:6px;border:1px solid #ccc;}}
-    button{{padding:8px 12px;background:#2a5298;color:white;border:none;border-radius:6px;}}
-    table{{width:100%;border-collapse:collapse;margin-top:15px;}}
-    th{{background:#2a5298;color:white;padding:8px;}}
-    td{{padding:8px;text-align:center;border-bottom:1px solid #eee;}}
-    .ok{{color:green;font-weight:bold}}
-    .comprar{{color:red;font-weight:bold}}
-    </style>
-    </head>
-    <body>
-    <div class="topbar">📦 ESTOQUE | {session["user"]}</div>
-    <div class="container">
+    # itens por gerenciadora
+    itens = {}
+    for d in Movimentacao.query.all():
+        itens.setdefault(d.gerenciadora, set()).add(d.item)
 
-    <div class="card">
-    <form method="POST" action="/inserir">
-    <select name="ger">{''.join([f"<option>{g}</option>" for g in GERENCIADORAS])}</select>
-    <select name="tipo"><option>ENTRADA</option><option>SAIDA</option></select>
-    <input name="item" placeholder="ITEM" required>
-    <input name="qtd" type="number" required>
-    <button>Inserir</button>
-    </form>
-    <br><a href="/excel">📊 Exportar Excel</a>
-    </div>
-    """
+    itens = {k:list(v) for k,v in itens.items()}
 
-    # ===== TABELAS ESTOQUE =====
-    for nome,lista in grupos.items():
-        html += f"<div class='card'><h3>{nome}</h3><table>"
-        html += """
-        <tr>
-        <th>Item</th>
-        <th>Saldo</th>
-        <th>Entrada Mensal</th>
-        <th>Saída Mensal</th>
-        <th>Previsão 6M +20%</th>
-        <th>Status</th>
-        </tr>
-        """
-
-        for d in lista:
-            cls = "ok" if d["status"]=="OK" else "comprar"
-            html += f"""
-            <tr>
-            <td>{d['item']}</td>
-            <td>{d['saldo']}</td>
-            <td>{d['entrada_mensal']}</td>
-            <td>{d['saida_mensal']}</td>
-            <td>{d['previsao6']}</td>
-            <td class='{cls}'>{d['status']}</td>
-            </tr>
-            """
-
-        html += "</table></div>"
-
-    # ===== ADMIN GERENCIAMENTO =====
+    # admin
+    usuarios_html = ""
     if session["tipo"] == "admin":
         usuarios = Usuario.query.all()
         linhas = ""
+
         for u in usuarios:
-            if u.usuario in ["admin", session["user"]]:
-                botao = "-"
+            if u.usuario == "admin":
+                acao = "ADMIN"
+            elif u.usuario == session["user"]:
+                acao = "VOCÊ"
             else:
-                botao = f"""
+                acao = f"""
                 <form method='POST' action='/excluir_usuario'>
                 <input type='hidden' name='usuario' value='{u.usuario}'>
                 <button style='background:red'>Excluir</button>
                 </form>
                 """
-            linhas += f"<tr><td>{u.usuario}</td><td>{u.tipo}</td><td>{botao}</td></tr>"
 
-        html += f"""
+            linhas += f"<tr><td>{u.usuario}</td><td>{u.tipo}</td><td>{acao}</td></tr>"
+
+        usuarios_html = f"""
         <div class='card'>
         <h3>Usuários</h3>
         <table>
-        <tr><th>Usuário</th><th>Tipo</th><th>Ação</th></tr>
+        <tr><th>Nome</th><th>Tipo</th><th>Ação</th></tr>
         {linhas}
         </table>
-        </div>
 
-        <div class='card'>
         <h3>Criar Usuário</h3>
         <form method="POST" action="/criar_usuario">
-        <input name="usuario" required>
-        <input name="senha" required>
+        <input name="usuario" placeholder="Usuário" required>
+        <input name="senha" placeholder="Senha" required>
         <select name="tipo">
         <option value="admin">Admin</option>
         <option value="operador">Operador</option>
@@ -252,7 +150,84 @@ def sistema():
         </div>
         """
 
-    html += "</div></body></html>"
+    # form
+    if session["tipo"] == "admin":
+        campo_item = "<input name='item' required>"
+    else:
+        campo_item = "<select name='item' id='itemSelect'></select>"
+
+    html = f"""
+    <html>
+    <head>
+    <style>
+    body{{font-family:Arial;background:#f4f6f9;margin:0}}
+    .top{{background:#2c3e50;color:white;padding:15px;text-align:center}}
+    .card{{background:white;margin:20px;padding:20px;border-radius:10px}}
+    table{{width:100%;border-collapse:collapse}}
+    th{{background:#2c3e50;color:white}}
+    td,th{{padding:8px;text-align:center;border-bottom:1px solid #ddd}}
+    button{{padding:8px;background:#2c3e50;color:white;border:none;border-radius:6px}}
+    input,select{{padding:8px;margin:5px;width:100%}}
+    </style>
+    </head>
+    <body>
+
+    <div class="top">ESTOQUE | {session["user"]}</div>
+
+    <div class="card">
+    <form method="POST" action="/inserir">
+    <select name="ger" id="gerSelect">
+    {"".join([f"<option>{g}</option>" for g in GERENCIADORAS])}
+    </select>
+
+    <select name="tipo">
+    <option>ENTRADA</option>
+    <option>SAIDA</option>
+    </select>
+
+    {campo_item}
+
+    <input name="qtd" type="number" required>
+    <button>Salvar</button>
+    </form>
+    </div>
+
+    <div class="card">
+    <table>
+    <tr><th>Item</th><th>Entrada</th><th>Saída</th><th>Saldo</th><th>Média</th><th>6M+20%</th><th>Status</th></tr>
+    """
+
+    for d in dados:
+        html += f"<tr><td>{d['item']}</td><td>{d['entrada']}</td><td>{d['saida']}</td><td>{d['saldo']}</td><td>{d['media']}</td><td>{d['proj']}</td><td>{d['status']}</td></tr>"
+
+    html += "</table></div>"
+
+    html += usuarios_html
+
+    # JS corrigido
+    html += f"""
+    <script>
+    const itens = {json.dumps(itens)};
+    const ger = document.getElementById("gerSelect");
+    const item = document.getElementById("itemSelect");
+
+    function atualizar(){{
+        if(!item) return;
+        item.innerHTML="";
+        (itens[ger.value] || []).forEach(i => {{
+            let o = document.createElement("option");
+            o.text = i;
+            item.add(o);
+        }});
+    }}
+
+    ger.onchange = atualizar;
+    window.onload = atualizar;
+    </script>
+
+    </body></html>
+    """
+
     return html
 
 # =========================
@@ -260,59 +235,100 @@ def sistema():
 # =========================
 @app.route("/inserir", methods=["POST"])
 def inserir():
-    db.session.add(Movimentacao(
+    mov = Movimentacao(
         gerenciadora=request.form["ger"],
         tipo=request.form["tipo"],
         item=request.form["item"].upper(),
         quantidade=int(request.form["qtd"])
-    ))
+    )
+
+    db.session.add(mov)
     db.session.commit()
+
     return redirect("/sistema")
 
 # =========================
-# USUÁRIOS
+# CRIAR USUARIO
 # =========================
 @app.route("/criar_usuario", methods=["POST"])
 def criar_usuario():
     if session.get("tipo") != "admin":
         return redirect("/")
 
-    if Usuario.query.filter_by(usuario=request.form["usuario"]).first():
-        return "Usuário já existe"
+    try:
+        novo = Usuario(
+            usuario=request.form["usuario"],
+            senha=request.form["senha"],
+            tipo=request.form["tipo"]
+        )
+        db.session.add(novo)
+        db.session.commit()
+    except:
+        db.session.rollback()
 
-    db.session.add(Usuario(
-        usuario=request.form["usuario"],
-        senha=request.form["senha"],
-        tipo=request.form["tipo"]
-    ))
-    db.session.commit()
     return redirect("/sistema")
 
+# =========================
+# EXCLUIR USUARIO
+# =========================
 @app.route("/excluir_usuario", methods=["POST"])
 def excluir_usuario():
     if session.get("tipo") != "admin":
         return redirect("/")
 
-    u = request.form["usuario"]
-    if u in ["admin", session["user"]]:
-        return "Não permitido"
+    user = request.form["usuario"]
 
-    user = Usuario.query.filter_by(usuario=u).first()
-    if user:
-        db.session.delete(user)
+    if user == "admin" or user == session["user"]:
+        return redirect("/sistema")
+
+    u = Usuario.query.filter_by(usuario=user).first()
+
+    if u:
+        db.session.delete(u)
         db.session.commit()
 
     return redirect("/sistema")
 
 # =========================
-# EXCEL
+# CALCULO
 # =========================
-@app.route("/excel")
-def excel():
-    df = pd.DataFrame(calcular())
-    arquivo = "estoque.xlsx"
-    df.to_excel(arquivo, index=False)
-    return send_file(arquivo, as_attachment=True)
+def calcular():
+    dados = Movimentacao.query.all()
+    res = {}
 
+    for d in dados:
+        chave = (d.gerenciadora, d.item)
+        if chave not in res:
+            res[chave] = {"entrada":0,"saida":0}
+
+        if d.tipo == "ENTRADA":
+            res[chave]["entrada"] += d.quantidade
+        else:
+            res[chave]["saida"] += d.quantidade
+
+    final = []
+
+    for (g,i),v in res.items():
+        saldo = v["entrada"] - v["saida"]
+        media = v["saida"]
+        proj = int(media * 6 * 1.2)
+
+        status = "OK" if saldo >= proj else "COMPRAR"
+
+        final.append({
+            "item":i,
+            "entrada":v["entrada"],
+            "saida":v["saida"],
+            "saldo":saldo,
+            "media":media,
+            "proj":proj,
+            "status":status
+        })
+
+    return final
+
+# =========================
+# START
+# =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
