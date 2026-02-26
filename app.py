@@ -9,7 +9,7 @@ app = Flask(__name__)
 app.secret_key = "segredo"
 
 # =========================
-# BANCO
+# BANCO (RENDER)
 # =========================
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -40,12 +40,18 @@ class Movimentacao(db.Model):
 
 GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
 
+# =========================
+# INIT BANCO (SEGURO)
+# =========================
 with app.app_context():
-    db.create_all()
-    if not Usuario.query.filter_by(usuario="admin").first():
-        admin = Usuario(usuario="admin", senha="123", tipo="admin")
-        db.session.add(admin)
-        db.session.commit()
+    try:
+        db.create_all()
+        if not Usuario.query.filter_by(usuario="admin").first():
+            admin = Usuario(usuario="admin", senha="123", tipo="admin")
+            db.session.add(admin)
+            db.session.commit()
+    except Exception as e:
+        print("ERRO BANCO:", e)
 
 # =========================
 # LOGIN BONITO
@@ -84,7 +90,6 @@ def login():
         text-align:center;
         box-shadow:0 10px 30px rgba(0,0,0,0.3);
     }
-    h2{margin-bottom:20px;}
     input{
         width:100%;
         padding:10px;
@@ -102,7 +107,6 @@ def login():
         font-weight:bold;
         cursor:pointer;
     }
-    button:hover{background:#1e3c72;}
     </style>
     </head>
     <body>
@@ -119,15 +123,20 @@ def login():
     """
 
 # =========================
-# FUNÇÃO ITENS EXISTENTES
+# ITENS EXISTENTES
 # =========================
 def itens_por_gerenciadora():
-    dados = Movimentacao.query.all()
+    try:
+        dados = Movimentacao.query.all()
+    except:
+        dados = []
+
     itens = {}
     for d in dados:
         if d.gerenciadora not in itens:
             itens[d.gerenciadora] = set()
         itens[d.gerenciadora].add(d.item)
+
     return {g: sorted(list(v)) for g, v in itens.items()}
 
 # =========================
@@ -152,19 +161,9 @@ def sistema():
 
     html = f"""
     <html>
-    <head>
-    <style>
-    body{{font-family:Arial;background:#f4f4f4;text-align:center;}}
-    table{{width:95%;margin:20px auto;border-collapse:collapse;background:white;}}
-    th,td{{padding:8px;border:1px solid #ccc;}}
-    th{{background:black;color:white;}}
-    form{{background:white;padding:20px;width:400px;margin:auto;border-radius:10px;}}
-    button{{background:green;color:white;padding:10px;width:100%;}}
-    </style>
-    </head>
-    <body>
+    <body style='font-family:Arial;background:#f4f4f4;text-align:center;'>
 
-    <h1>📦 ESTOQUE INTELIGENTE</h1>
+    <h1>📦 ESTOQUE</h1>
 
     <form method="POST" action="/inserir">
     <select name="ger" id="gerSelect">
@@ -183,62 +182,44 @@ def sistema():
     <button>INSERIR</button>
     </form>
 
-    <br><a href="/excel">📊 EXPORTAR EXCEL</a>
-    <br><a href="/backup">💾 BACKUP</a>
-    <br><a href="/">🚪 SAIR</a>
+    <br><a href="/excel">EXPORTAR</a>
     """
 
     for nome, lista in grupos.items():
-        html += f"<h2>{nome}</h2>"
-        html += """
-        <table>
-        <tr>
-        <th>ITEM</th><th>ENTRADA</th><th>SAIDA</th>
-        <th>SALDO</th><th>MÉDIA</th><th>6 MESES</th><th>STATUS</th>
-        </tr>
-        """
+        html += f"<h2>{nome}</h2><table border=1 style='margin:auto'>"
+        html += "<tr><th>ITEM</th><th>SALDO</th><th>STATUS</th></tr>"
         for d in lista:
-            cor = "red" if d["saldo"] < 50 else "black"
-            html += f"""
-            <tr>
-            <td>{d['item']}</td>
-            <td>{d['entrada']}</td>
-            <td>{d['saida']}</td>
-            <td style='color:{cor}'>{d['saldo']}</td>
-            <td>{d['media']}</td>
-            <td>{d['proj']}</td>
-            <td>{d['status']}</td>
-            </tr>
-            """
+            html += f"<tr><td>{d['item']}</td><td>{d['saldo']}</td><td>{d['status']}</td></tr>"
         html += "</table>"
 
-    html += f"""
+    # 🔥 FIX JSON (NÃO QUEBRA MAIS)
+    html += """
     <script>
-    const itens = {json.dumps(itens_existentes)};
+    const itens = """ + json.dumps(itens_existentes) + """;
+
     const gerSelect = document.getElementById("gerSelect");
     const itemSelect = document.getElementById("itemSelect");
 
-    function atualizarItens(){{
+    function atualizarItens(){
         if(!itemSelect) return;
         let ger = gerSelect.value;
         itemSelect.innerHTML = "";
-        if(itens[ger]){{
-            itens[ger].forEach(i=>{{
+        if(itens[ger]){
+            itens[ger].forEach(i=>{
                 let opt=document.createElement("option");
                 opt.value=i;
                 opt.text=i;
                 itemSelect.appendChild(opt);
-            }});
-        }}
-    }}
+            });
+        }
+    }
 
     gerSelect.addEventListener("change", atualizarItens);
     window.onload = atualizarItens;
     </script>
-
-    </body></html>
     """
 
+    html += "</body></html>"
     return html
 
 # =========================
@@ -275,13 +256,17 @@ def inserir():
 # CALCULO
 # =========================
 def calcular():
-    dados = Movimentacao.query.all()
-    resultado = {}
+    try:
+        dados = Movimentacao.query.all()
+    except:
+        dados = []
 
+    resultado = {}
     for d in dados:
         chave = (d.gerenciadora, d.item)
         if chave not in resultado:
             resultado[chave] = {"entrada":0,"saida":0}
+
         if d.tipo == "ENTRADA":
             resultado[chave]["entrada"] += d.quantidade
         else:
@@ -290,18 +275,13 @@ def calcular():
     final = []
     for (ger,item), v in resultado.items():
         saldo = v["entrada"] - v["saida"]
-        media = v["saida"]
-        proj = int(media * 6 * 1.2)
+        proj = int(v["saida"] * 6 * 1.2)
         status = "OK" if saldo >= proj else "COMPRAR"
 
         final.append({
             "ger":ger,
             "item":item,
-            "entrada":v["entrada"],
-            "saida":v["saida"],
             "saldo":saldo,
-            "media":media,
-            "proj":proj,
             "status":status
         })
 
@@ -316,26 +296,4 @@ def excel():
     df = pd.DataFrame(dados)
     arquivo = "estoque.xlsx"
     df.to_excel(arquivo, index=False)
-    return send_file(arquivo, as_attachment=True)
-
-# =========================
-# BACKUP
-# =========================
-@app.route("/backup")
-def backup():
-    dados = Movimentacao.query.all()
-    lista = []
-
-    for d in dados:
-        lista.append({
-            "data": d.data,
-            "ger": d.gerenciadora,
-            "tipo": d.tipo,
-            "item": d.item,
-            "qtd": d.quantidade
-        })
-
-    df = pd.DataFrame(lista)
-    arquivo = "backup.xlsx"
-    df.to_excel(arquivo, index=False)
-    return send_file(arquivo, as_attachment=True)
+    return send_file(arquivo, as_attachment=True)9
