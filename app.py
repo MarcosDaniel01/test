@@ -44,17 +44,14 @@ GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
 # INIT BANCO
 # =========================
 with app.app_context():
-    try:
-        db.create_all()
-        if not Usuario.query.filter_by(usuario="admin").first():
-            admin = Usuario(usuario="admin", senha="123", tipo="admin")
-            db.session.add(admin)
-            db.session.commit()
-    except Exception as e:
-        print("ERRO BANCO:", e)
+    db.create_all()
+    if not Usuario.query.filter_by(usuario="admin").first():
+        admin = Usuario(usuario="admin", senha="123", tipo="admin")
+        db.session.add(admin)
+        db.session.commit()
 
 # =========================
-# LOGIN BONITO
+# LOGIN
 # =========================
 @app.route("/", methods=["GET", "POST"])
 def login():
@@ -107,7 +104,6 @@ def login():
         font-weight:bold;
         cursor:pointer;
     }
-    button:hover{background:#1e3c72;}
     </style>
     </head>
     <body>
@@ -127,21 +123,16 @@ def login():
 # ITENS EXISTENTES
 # =========================
 def itens_por_gerenciadora():
-    try:
-        dados = Movimentacao.query.all()
-    except:
-        dados = []
-
+    dados = Movimentacao.query.all()
     itens = {}
     for d in dados:
         if d.gerenciadora not in itens:
             itens[d.gerenciadora] = set()
         itens[d.gerenciadora].add(d.item)
-
     return {g: sorted(list(v)) for g, v in itens.items()}
 
 # =========================
-# SISTEMA BONITO
+# SISTEMA
 # =========================
 @app.route("/sistema")
 def sistema():
@@ -157,51 +148,55 @@ def sistema():
 
     if session["tipo"] == "admin":
         campo_item = '<input name="item" placeholder="ITEM (MAIÚSCULO)" required>'
+        criar_usuario_html = """
+        <div class='card'>
+        <h3>Criar Usuário</h3>
+        <form method="POST" action="/criar_usuario">
+            <input name="usuario" placeholder="Usuário" required>
+            <input name="senha" placeholder="Senha" required>
+            <select name="tipo">
+                <option value="admin">Admin</option>
+                <option value="operador">Operador</option>
+            </select>
+            <button>Criar Usuário</button>
+        </form>
+        </div>
+        """
     else:
         campo_item = '<select name="item" id="itemSelect"></select>'
+        criar_usuario_html = ""
 
     html = f"""
     <html>
     <head>
     <style>
     body{{margin:0;font-family:Arial;background:#f1f4f9;}}
-
     .topbar{{background:linear-gradient(90deg,#1e3c72,#2a5298);
     color:white;padding:20px;text-align:center;font-size:22px;font-weight:bold;}}
-
     .container{{width:95%;margin:auto;}}
-
     .card{{background:white;padding:20px;margin:20px auto;
     border-radius:12px;box-shadow:0 5px 15px rgba(0,0,0,0.1);max-width:500px;}}
-
     select,input{{width:100%;padding:10px;margin:8px 0;
     border-radius:8px;border:1px solid #ccc;}}
-
     button{{width:100%;padding:12px;background:#2a5298;
     color:white;border:none;border-radius:8px;font-weight:bold;cursor:pointer;}}
-
-    button:hover{{background:#1e3c72;}}
-
     table{{width:100%;border-collapse:collapse;margin:20px 0;
     background:white;border-radius:12px;overflow:hidden;
     box-shadow:0 5px 15px rgba(0,0,0,0.1);}}
-
     th{{background:#2a5298;color:white;padding:10px;}}
     td{{padding:10px;text-align:center;border-bottom:1px solid #eee;}}
-
     .ok{{color:green;font-weight:bold;}}
     .comprar{{color:red;font-weight:bold;}}
-    .ger-title{{margin-top:40px;font-size:20px;font-weight:bold;color:#1e3c72;}}
-    a{{text-decoration:none;color:#2a5298;font-weight:bold;}}
     </style>
     </head>
     <body>
 
     <div class="topbar">
-        📦 ESTOQUE INTELIGENTE | Usuário: {session["user"].upper()}
+        📦 ESTOQUE | Usuário: {session["user"].upper()}
     </div>
 
     <div class="container">
+
         <div class="card">
             <form method="POST" action="/inserir">
                 <select name="ger" id="gerSelect">
@@ -217,40 +212,24 @@ def sistema():
 
                 <input name="qtd" type="number" required>
 
-                <button>INSERIR MOVIMENTAÇÃO</button>
+                <button>Inserir Movimentação</button>
             </form>
-            <br>
-            <a href="/excel">📊 Exportar Excel</a>
         </div>
+
+        {criar_usuario_html}
     """
 
     for nome, lista in grupos.items():
-        html += f"<div class='ger-title'>{nome}</div>"
-        html += """
-        <table>
-        <tr>
-        <th>ITEM</th>
-        <th>SALDO</th>
-        <th>STATUS</th>
-        </tr>
-        """
+        html += f"<h3>{nome}</h3><table><tr><th>ITEM</th><th>SALDO</th><th>STATUS</th></tr>"
         for d in lista:
             classe = "ok" if d["status"] == "OK" else "comprar"
-            html += f"""
-            <tr>
-                <td>{d['item']}</td>
-                <td>{d['saldo']}</td>
-                <td class='{classe}'>{d['status']}</td>
-            </tr>
-            """
+            html += f"<tr><td>{d['item']}</td><td>{d['saldo']}</td><td class='{classe}'>{d['status']}</td></tr>"
         html += "</table>"
 
     html += """
     </div>
-
     <script>
     const itens = """ + json.dumps(itens_existentes) + """;
-
     const gerSelect = document.getElementById("gerSelect");
     const itemSelect = document.getElementById("itemSelect");
 
@@ -267,11 +246,9 @@ def sistema():
             });
         }
     }
-
     gerSelect.addEventListener("change", atualizarItens);
     window.onload = atualizarItens;
     </script>
-
     </body>
     </html>
     """
@@ -279,7 +256,25 @@ def sistema():
     return html
 
 # =========================
-# INSERIR
+# CRIAR USUARIO
+# =========================
+@app.route("/criar_usuario", methods=["POST"])
+def criar_usuario():
+    if session.get("tipo") != "admin":
+        return "Sem permissão"
+
+    u = request.form["usuario"]
+    s = request.form["senha"]
+    t = request.form["tipo"]
+
+    novo = Usuario(usuario=u, senha=s, tipo=t)
+    db.session.add(novo)
+    db.session.commit()
+
+    return redirect("/sistema")
+
+# =========================
+# RESTANTE IGUAL
 # =========================
 @app.route("/inserir", methods=["POST"])
 def inserir():
@@ -308,21 +303,14 @@ def inserir():
     db.session.commit()
     return redirect("/sistema")
 
-# =========================
-# CALCULO
-# =========================
 def calcular():
-    try:
-        dados = Movimentacao.query.all()
-    except:
-        dados = []
-
+    dados = Movimentacao.query.all()
     resultado = {}
+
     for d in dados:
         chave = (d.gerenciadora, d.item)
         if chave not in resultado:
             resultado[chave] = {"entrada":0,"saida":0}
-
         if d.tipo == "ENTRADA":
             resultado[chave]["entrada"] += d.quantidade
         else:
@@ -334,22 +322,6 @@ def calcular():
         proj = int(v["saida"] * 6 * 1.2)
         status = "OK" if saldo >= proj else "COMPRAR"
 
-        final.append({
-            "ger":ger,
-            "item":item,
-            "saldo":saldo,
-            "status":status
-        })
+        final.append({"ger":ger,"item":item,"saldo":saldo,"status":status})
 
     return final
-
-# =========================
-# EXCEL
-# =========================
-@app.route("/excel")
-def excel():
-    dados = calcular()
-    df = pd.DataFrame(dados)
-    arquivo = "estoque.xlsx"
-    df.to_excel(arquivo, index=False)
-    return send_file(arquivo, as_attachment=True)
