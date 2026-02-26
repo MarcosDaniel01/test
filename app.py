@@ -133,15 +133,16 @@ def sistema():
     .gerenciadora{{margin-top:30px;border-radius:12px;overflow:hidden}}
     .titulo{{padding:12px;color:white;font-weight:bold}}
 
-    .PRIME{{background:#007bff}}
-    .LINK{{background:#28a745}}
-    .NEO{{background:#6f42c1}}
-    .FITMOBY{{background:#fd7e14}}
-    .OUTROS{{background:#343a40}}
+    /* CORES ATUALIZADAS */
+    .PRIME{{background:#28a745}}    /* Verde */
+    .NEO{{background:#fd7e14}}      /* Laranja */
+    .LINK{{background:#004085}}     /* Azul Escuro */
+    .FITMOBY{{background:#6f42c1}}  /* Roxo */
+    .OUTROS{{background:#dc3545}}   /* Vermelho */
 
     </style>
 
-    <div class="topbar">📦 ESTOQUE | {session["user"]}</div>
+    <div class="topbar">📦 CONTROLE DE ESTOQUE | {session["user"]}</div>
 
     <div class="card">
     <form method="POST" action="/inserir">
@@ -150,21 +151,18 @@ def sistema():
     </select>
 
     <select name="tipo">
-    <option>ENTRADA</option>
-    <option>SAIDA</option>
+    <option value="ENTRADA">ENTRADA</option>
+    <option value="SAIDA">SAÍDA</option>
     </select>
 
     {campo_item}
 
     <input name="qtd" type="number" required placeholder="Quantidade">
-    <button>Salvar</button>
+    <button>Salvar Movimentação</button>
     </form>
     </div>
     """
 
-    # =========================
-    # ESTOQUE BONITO
-    # =========================
     for g in GERENCIADORAS:
         lista = grupos.get(g, [])
 
@@ -175,11 +173,11 @@ def sistema():
         <table>
         <tr>
         <th>Item</th>
-        <th>Entrada Mensal</th>
-        <th>Saída Mensal</th>
-        <th>Saldo Mensal</th>
-        <th>Média</th>
-        <th>Previsão 6 Meses + 20%</th>
+        <th>Entrada</th>
+        <th>Saída</th>
+        <th>Estoque Atual</th>
+        <th>Média Mensal</th>
+        <th>Previsão (6 Meses + 20%)</th>
         <th>Status</th>
         </tr>
         """
@@ -192,7 +190,7 @@ def sistema():
             <td>{d['item']}</td>
             <td>{d['entrada']}</td>
             <td>{d['saida']}</td>
-            <td>{d['saldo']}</td>
+            <td style="font-weight:bold">{d['saldo']}</td>
             <td>{d['media']}</td>
             <td>{d['proj']}</td>
             <td class="{cls}">{d['status']}</td>
@@ -201,9 +199,6 @@ def sistema():
 
         html += "</table></div>"
 
-    # =========================
-    # ADMIN
-    # =========================
     if session["tipo"] == "admin":
         usuarios = Usuario.query.all()
         linhas=""
@@ -225,10 +220,10 @@ def sistema():
 
         html += f"""
         <div class='card'>
-        <h3>Usuários</h3>
+        <h3>Gerenciar Usuários</h3>
         <table><tr><th>Nome</th><th>Tipo</th><th>Ação</th></tr>{linhas}</table>
 
-        <h3>Criar Usuário</h3>
+        <h3>Criar Novo Usuário</h3>
         <form method="POST" action="/criar_usuario">
         <input name="usuario" required placeholder="Usuário">
         <input name="senha" required placeholder="Senha">
@@ -265,9 +260,6 @@ def sistema():
 
     return html
 
-# =========================
-# ROTAS
-# =========================
 @app.route("/inserir", methods=["POST"])
 def inserir():
     db.session.add(Movimentacao(
@@ -301,21 +293,18 @@ def excluir_usuario():
     if session.get("tipo") != "admin":
         return redirect("/")
 
-    saldo = request.form["usuario"]
+    user_alvo = request.form["usuario"]
 
-    if saldo == "admin" or saldo == session["user"]:
+    if user_alvo == "admin" or user_alvo == session["user"]:
         return redirect("/sistema")
 
-    u = Usuario.query.filter_by(usuario=saldo).first()
+    u = Usuario.query.filter_by(usuario=user_alvo).first()
     if u:
         db.session.delete(u)
         db.session.commit()
 
     return redirect("/sistema")
 
-# =========================
-# CALCULO
-# =========================
 def calcular():
     dados = Movimentacao.query.all()
     res = {}
@@ -333,18 +322,18 @@ def calcular():
     final = []
 
     for (g,i),v in res.items():
-        saldo = v["entrada"] - v["saida"]
+        estoque_atual = v["entrada"] - v["saida"]
         media = v["saida"]
         proj = int(media * 6 * 1.2)
 
-        status = "OK" if saldo >= proj else "COMPRAR"
+        status = "OK" if estoque_atual >= proj else "COMPRAR"
 
         final.append({
             "ger":g,
             "item":i,
             "entrada":v["entrada"],
             "saida":v["saida"],
-            "saldo":saldo,
+            "saldo":estoque_atual,
             "media":media,
             "proj":proj,
             "status":status
