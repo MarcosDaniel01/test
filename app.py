@@ -135,8 +135,13 @@ def sistema():
 
     <div class="topbar">📦 CONTROLE DE ESTOQUE | {session["user"]}</div>
 
+    <div style="padding:20px">
+    <input type="text" id="filtro" placeholder="🔎 Buscar item..."
+    style="width:100%;padding:12px;border-radius:8px;border:1px solid #ccc">
+    </div>
+
     <div class="card">
-    <form method="POST" action="/inserir">
+    <form method="POST" action="/inserir" onsubmit="return confirmarMov()">
     <select name="ger" id="gerSelect">
     {"".join([f"<option>{g}</option>" for g in GERENCIADORAS])}
     </select>
@@ -174,7 +179,6 @@ def sistema():
         for d in lista:
             cls = "ok" if d["status"]=="OK" else "comprar"
             
-            # Botão de exclusão de item para Admin
             coluna_acao_corpo = ""
             if session["tipo"] == "admin":
                 coluna_acao_corpo = f"""
@@ -182,7 +186,7 @@ def sistema():
                     <form method="POST" action="/excluir_item" style="margin:0">
                         <input type="hidden" name="ger" value="{d['ger']}">
                         <input type="hidden" name="item" value="{d['item']}">
-                        <button style="background:#dc3545; padding:5px 10px; font-size:12px" 
+                        <button style="background:#dc3545; padding:5px 10px; font-size:12px"
                                 onclick="return confirm('Excluir todo o histórico de {d['item']}?')">
                             🗑️
                         </button>
@@ -205,70 +209,65 @@ def sistema():
 
         html += "</table></div>"
 
-    if session["tipo"] == "admin":
-        usuarios = Usuario.query.all()
-        linhas=""
-
-        for u in usuarios:
-            if u.usuario=="admin":
-                acao="ADMIN"
-            elif u.usuario==session["user"]:
-                acao="VOCÊ"
-            else:
-                acao=f"""
-                <form method='POST' action='/excluir_usuario' style='margin:0'>
-                <input type='hidden' name='usuario' value='{u.usuario}'>
-                <button style='background:red'>Excluir</button>
-                </form>
-                """
-
-            linhas += f"<tr><td>{u.usuario}</td><td>{u.tipo}</td><td>{acao}</td></tr>"
-
-        html += f"""
-        <div class='card'>
-        <h3>Gerenciar Usuários</h3>
-        <table><tr><th>Nome</th><th>Tipo</th><th>Ação</th></tr>{linhas}</table>
-
-        <h3>Criar Novo Usuário</h3>
-        <form method="POST" action="/criar_usuario">
-        <input name="usuario" required placeholder="Usuário">
-        <input name="senha" required placeholder="Senha">
-        <select name="tipo">
-        <option value="admin">Admin</option>
-        <option value="operador">Operador</option>
-        </select>
-        <button>Criar</button>
-        </form>
-        </div>
-        """
-
     html += f"""
-    <script>
-    const itens = {json.dumps(itens)};
-    const ger = document.getElementById("gerSelect");
-    const item = document.getElementById("itemSelect");
+<script>
 
-    function atualizar(){{
-        if(!item) return;
-        item.innerHTML="";
-        (itens[ger.value] || []).forEach(i => {{
-            let o = document.createElement("option");
-            o.text = i;
-            item.add(o);
-        }});
-    }}
+const itens = {json.dumps(itens)};
+const ger = document.getElementById("gerSelect");
+const item = document.getElementById("itemSelect");
 
-    ger.onchange = atualizar;
-    window.onload = atualizar;
-    </script>
-    </html>
-    """
+function atualizar(){{
+    if(!item) return;
+    item.innerHTML="";
+    (itens[ger.value] || []).forEach(i => {{
+        let o = document.createElement("option");
+        o.text = i;
+        item.add(o);
+    }});
+}}
+
+ger.onchange = atualizar;
+window.onload = atualizar;
+
+function confirmarMov(){{
+    let tipo = document.querySelector("select[name='tipo']").value;
+    let item = document.querySelector("[name='item']").value;
+    let qtd = document.querySelector("[name='qtd']").value;
+    let ger = document.querySelector("[name='ger']").value;
+
+    return confirm(
+        "Confirmar movimentação?\\n\\n" +
+        "Gerenciadora: " + ger + "\\n" +
+        "Tipo: " + tipo + "\\n" +
+        "Item: " + item + "\\n" +
+        "Quantidade: " + qtd
+    );
+}}
+
+document.getElementById("filtro").addEventListener("keyup", function(){{
+    let texto = this.value.toLowerCase();
+    let linhas = document.querySelectorAll("table tr");
+
+    linhas.forEach((linha,i)=>{{
+        if(i==0) return;
+
+        let item = linha.children[0].innerText.toLowerCase();
+
+        if(item.includes(texto)){{
+            linha.style.display="";
+        }}else{{
+            linha.style.display="none";
+        }}
+    }});
+}});
+
+</script>
+</html>
+"""
 
     return html
 
-# =========================
-# ROTAS DE AÇÃO
-# =========================
+
 @app.route("/inserir", methods=["POST"])
 def inserir():
     db.session.add(Movimentacao(
@@ -280,52 +279,6 @@ def inserir():
     db.session.commit()
     return redirect("/sistema")
 
-@app.route("/excluir_item", methods=["POST"])
-def excluir_item():
-    if session.get("tipo") != "admin":
-        return redirect("/")
-
-    ger = request.form["ger"]
-    item = request.form["item"]
-
-    # Remove todas as movimentações ligadas a esse item específico daquela gerenciadora
-    Movimentacao.query.filter_by(gerenciadora=ger, item=item).delete()
-    db.session.commit()
-    return redirect("/sistema")
-
-@app.route("/criar_usuario", methods=["POST"])
-def criar_usuario():
-    if session.get("tipo") != "admin":
-        return redirect("/")
-
-    try:
-        db.session.add(Usuario(
-            usuario=request.form["usuario"],
-            senha=request.form["senha"],
-            tipo=request.form["tipo"]
-        ))
-        db.session.commit()
-    except:
-        db.session.rollback()
-
-    return redirect("/sistema")
-
-@app.route("/excluir_usuario", methods=["POST"])
-def excluir_usuario():
-    if session.get("tipo") != "admin":
-        return redirect("/")
-
-    user_alvo = request.form["usuario"]
-
-    if user_alvo == "admin" or user_alvo == session["user"]:
-        return redirect("/sistema")
-
-    u = Usuario.query.filter_by(usuario=user_alvo).first()
-    if u:
-        db.session.delete(u)
-        db.session.commit()
-
-    return redirect("/sistema")
 
 def calcular():
     dados = Movimentacao.query.all()
@@ -362,6 +315,7 @@ def calcular():
         })
 
     return final
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
