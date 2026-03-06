@@ -135,7 +135,6 @@ def sistema():
     .LINK{{background:#004085}}
     .FITMOBY{{background:#6f42c1}}
     .OUTROS{{background:#dc3545}}
-
     </style>
 
     <div class="topbar">📦 CONTROLE DE ESTOQUE | {session["user"]}</div>
@@ -245,7 +244,6 @@ let select=document.getElementById("itemSelect");
 let options=select.options;
 
 for(let i=0;i<options.length;i++){{
-
 let txt=options[i].text.toLowerCase();
 
 if(txt.includes(filtro)){{
@@ -262,3 +260,75 @@ options[i].style.display="none";
 """
 
     return html
+
+
+# =========================
+# INSERIR MOVIMENTAÇÃO
+# =========================
+@app.route("/inserir", methods=["POST"])
+def inserir():
+
+    db.session.add(Movimentacao(
+        gerenciadora=request.form["ger"],
+        tipo=request.form["tipo"],
+        item=request.form["item"].upper(),
+        quantidade=int(request.form["qtd"])
+    ))
+
+    db.session.commit()
+
+    return redirect("/sistema")
+
+
+# =========================
+# CALCULAR ESTOQUE
+# =========================
+def calcular():
+
+    dados = Movimentacao.query.all()
+
+    res = {}
+
+    for d in dados:
+
+        chave = (d.gerenciadora, d.item)
+
+        if chave not in res:
+            res[chave] = {"entrada":0,"saida":0}
+
+        if d.tipo == "ENTRADA":
+            res[chave]["entrada"] += d.quantidade
+        else:
+            res[chave]["saida"] += d.quantidade
+
+    final = []
+
+    for (g,i),v in res.items():
+
+        estoque_atual = v["entrada"] - v["saida"]
+
+        media = v["saida"]
+
+        proj = int(media * 6 * 1.2)
+
+        status = "OK" if estoque_atual >= proj else "COMPRAR"
+
+        final.append({
+            "ger":g,
+            "item":i,
+            "entrada":v["entrada"],
+            "saida":v["saida"],
+            "saldo":estoque_atual,
+            "media":media,
+            "proj":proj,
+            "status":status
+        })
+
+    return final
+
+
+# =========================
+# RUN
+# =========================
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",10000)))
