@@ -107,7 +107,10 @@ def sistema():
     if session["tipo"] == "admin":
         campo_item = "<input name='item' required placeholder='Novo item'>"
     else:
-        campo_item = "<select name='item' id='itemSelect'></select>"
+        campo_item = """
+        <input type='text' id='buscarItem' placeholder='🔎 Buscar item...' onkeyup='filtrarItens()'>
+        <select name='item' id='itemSelect'></select>
+        """
 
     html = f"""
     <html>
@@ -127,33 +130,34 @@ def sistema():
     .gerenciadora{{margin-top:30px;border-radius:12px;overflow:hidden}}
     .titulo{{padding:12px;color:white;font-weight:bold}}
 
-    /* CORES CORRIGIDAS */
-    .NEO{{background:#28a745}}
     .PRIME{{background:#fd7e14}}
+    .NEO{{background:#28a745}}
     .LINK{{background:#004085}}
     .FITMOBY{{background:#6f42c1}}
     .OUTROS{{background:#dc3545}}
+
     </style>
 
     <div class="topbar">📦 CONTROLE DE ESTOQUE | {session["user"]}</div>
 
-    <div style="padding:20px">
-    <input type="text" id="filtro" placeholder="🔎 Buscar item..."
-    style="width:100%;padding:12px;border-radius:8px;border:1px solid #ccc">
-    </div>
-
     <div class="card">
     <form method="POST" action="/inserir" onsubmit="return confirmarMov()">
+
     <select name="ger" id="gerSelect">
     {"".join([f"<option>{g}</option>" for g in GERENCIADORAS])}
     </select>
+
     <select name="tipo">
     <option value="ENTRADA">ENTRADA</option>
-    <option value="SAIDA">SAÍDA</option>
+    <option value="SAIDA">SAIDA</option>
     </select>
+
     {campo_item}
+
     <input name="qtd" type="number" required placeholder="Quantidade">
+
     <button>Salvar Movimentação</button>
+
     </form>
     </div>
     """
@@ -193,81 +197,68 @@ def sistema():
 
         html += "</table></div>"
 
-    html += "</html>"
+    html += f"""
+<script>
+
+const itens = {json.dumps(itens)};
+const ger = document.getElementById("gerSelect");
+const item = document.getElementById("itemSelect");
+
+function atualizar(){{
+    if(!item) return;
+    item.innerHTML="";
+    (itens[ger.value] || []).forEach(i => {{
+        let o = document.createElement("option");
+        o.text = i;
+        item.add(o);
+    }});
+}}
+
+ger.onchange = atualizar;
+window.onload = atualizar;
+
+function confirmarMov(){{
+let tipo=document.querySelector("select[name='tipo']").value;
+let item=document.querySelector("[name='item']").value;
+let qtd=document.querySelector("[name='qtd']").value;
+let ger=document.querySelector("[name='ger']").value;
+
+let msg="";
+
+if(tipo=="ENTRADA"){{
+msg="Confirmar ENTRADA no estoque?";
+}}else{{
+msg="Confirmar SAIDA do estoque?";
+}}
+
+return confirm(
+msg+"\\n\\n"+
+"Gerenciadora: "+ger+"\\n"+
+"Item: "+item+"\\n"+
+"Quantidade: "+qtd
+);
+}}
+
+function filtrarItens(){{
+let filtro=document.getElementById("buscarItem").value.toLowerCase();
+let select=document.getElementById("itemSelect");
+let options=select.options;
+
+for(let i=0;i<options.length;i++){{
+
+let txt=options[i].text.toLowerCase();
+
+if(txt.includes(filtro)){{
+options[i].style.display="";
+}}else{{
+options[i].style.display="none";
+}}
+
+}}
+}}
+
+</script>
+</html>
+"""
 
     return html
-
-
-# =========================
-# INSERIR MOVIMENTAÇÃO
-# =========================
-@app.route("/inserir", methods=["POST"])
-def inserir():
-
-    ger = request.form["ger"]
-    tipo = request.form["tipo"]
-    item = request.form["item"]
-    qtd = int(request.form["qtd"])
-
-    mov = Movimentacao(
-        gerenciadora=ger,
-        tipo=tipo,
-        item=item,
-        quantidade=qtd
-    )
-
-    db.session.add(mov)
-    db.session.commit()
-
-    return redirect("/sistema")
-
-
-# =========================
-# CALCULO ESTOQUE
-# =========================
-def calcular():
-
-    dados = []
-
-    for ger in GERENCIADORAS:
-
-        itens = set()
-
-        for m in Movimentacao.query.filter_by(gerenciadora=ger).all():
-            itens.add(m.item)
-
-        for item in itens:
-
-            entradas = sum(m.quantidade for m in Movimentacao.query.filter_by(
-                gerenciadora=ger,item=item,tipo="ENTRADA").all())
-
-            saidas = sum(m.quantidade for m in Movimentacao.query.filter_by(
-                gerenciadora=ger,item=item,tipo="SAIDA").all())
-
-            saldo = entradas - saidas
-
-            media = round(saidas/6,2) if saidas else 0
-            proj = round(media*6*1.2)
-
-            status = "OK" if saldo >= proj else "COMPRAR"
-
-            dados.append({
-                "ger":ger,
-                "item":item,
-                "entrada":entradas,
-                "saida":saidas,
-                "saldo":saldo,
-                "media":media,
-                "proj":proj,
-                "status":status
-            })
-
-    return dados
-
-
-# =========================
-# RUN (RENDER)
-# =========================
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
