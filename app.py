@@ -135,6 +135,7 @@ def sistema():
 
     <div class="topbar">📦 CONTROLE DE ESTOQUE | {session["user"]}</div>
 
+    <!-- FILTRO ADICIONADO -->
     <div style="padding:20px">
     <input type="text" id="filtro" placeholder="🔎 Buscar item..."
     style="width:100%;padding:12px;border-radius:8px;border:1px solid #ccc">
@@ -178,21 +179,6 @@ def sistema():
 
         for d in lista:
             cls = "ok" if d["status"]=="OK" else "comprar"
-            
-            coluna_acao_corpo = ""
-            if session["tipo"] == "admin":
-                coluna_acao_corpo = f"""
-                <td>
-                    <form method="POST" action="/excluir_item" style="margin:0">
-                        <input type="hidden" name="ger" value="{d['ger']}">
-                        <input type="hidden" name="item" value="{d['item']}">
-                        <button style="background:#dc3545; padding:5px 10px; font-size:12px"
-                                onclick="return confirm('Excluir todo o histórico de {d['item']}?')">
-                            🗑️
-                        </button>
-                    </form>
-                </td>
-                """
 
             html += f"""
             <tr>
@@ -203,7 +189,6 @@ def sistema():
             <td>{d['media']}</td>
             <td>{d['proj']}</td>
             <td class="{cls}">{d['status']}</td>
-            {coluna_acao_corpo}
             </tr>
             """
 
@@ -229,6 +214,7 @@ function atualizar(){{
 ger.onchange = atualizar;
 window.onload = atualizar;
 
+// CONFIRMAÇÃO
 function confirmarMov(){{
     let tipo = document.querySelector("select[name='tipo']").value;
     let item = document.querySelector("[name='item']").value;
@@ -236,29 +222,31 @@ function confirmarMov(){{
     let ger = document.querySelector("[name='ger']").value;
 
     return confirm(
-        "Confirmar movimentação?\\n\\n" +
-        "Gerenciadora: " + ger + "\\n" +
-        "Tipo: " + tipo + "\\n" +
-        "Item: " + item + "\\n" +
-        "Quantidade: " + qtd
+        "Confirmar movimentação?\\n\\n"+
+        "Gerenciadora: "+ger+"\\n"+
+        "Tipo: "+tipo+"\\n"+
+        "Item: "+item+"\\n"+
+        "Quantidade: "+qtd
     );
 }}
 
-document.getElementById("filtro").addEventListener("keyup", function(){{
-    let texto = this.value.toLowerCase();
-    let linhas = document.querySelectorAll("table tr");
+// FILTRO
+document.getElementById("filtro").addEventListener("keyup",function(){{
+let texto=this.value.toLowerCase();
+let linhas=document.querySelectorAll("table tr");
 
-    linhas.forEach((linha,i)=>{{
-        if(i==0) return;
+linhas.forEach((linha,i)=>{{
+if(i==0)return;
 
-        let item = linha.children[0].innerText.toLowerCase();
+let item=linha.children[0].innerText.toLowerCase();
 
-        if(item.includes(texto)){{
-            linha.style.display="";
-        }}else{{
-            linha.style.display="none";
-        }}
-    }});
+if(item.includes(texto)){{
+linha.style.display="";
+}}else{{
+linha.style.display="none";
+}}
+
+}});
 }});
 
 </script>
@@ -266,56 +254,3 @@ document.getElementById("filtro").addEventListener("keyup", function(){{
 """
 
     return html
-
-
-@app.route("/inserir", methods=["POST"])
-def inserir():
-    db.session.add(Movimentacao(
-        gerenciadora=request.form["ger"],
-        tipo=request.form["tipo"],
-        item=request.form["item"].upper(),
-        quantidade=int(request.form["qtd"])
-    ))
-    db.session.commit()
-    return redirect("/sistema")
-
-
-def calcular():
-    dados = Movimentacao.query.all()
-    res = {}
-
-    for d in dados:
-        chave = (d.gerenciadora, d.item)
-        if chave not in res:
-            res[chave] = {"entrada":0,"saida":0}
-
-        if d.tipo == "ENTRADA":
-            res[chave]["entrada"] += d.quantidade
-        else:
-            res[chave]["saida"] += d.quantidade
-
-    final = []
-
-    for (g,i),v in res.items():
-        estoque_atual = v["entrada"] - v["saida"]
-        media = v["saida"]
-        proj = int(media * 6 * 1.2)
-
-        status = "OK" if estoque_atual >= proj else "COMPRAR"
-
-        final.append({
-            "ger":g,
-            "item":i,
-            "entrada":v["entrada"],
-            "saida":v["saida"],
-            "saldo":estoque_atual,
-            "media":media,
-            "proj":proj,
-            "status":status
-        })
-
-    return final
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
