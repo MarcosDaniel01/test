@@ -1,4 +1,3 @@
-
 from flask import Flask, request, redirect, session
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
@@ -113,6 +112,14 @@ def sistema():
         <select name='item' id='itemSelect'></select>
         """
 
+    botao_usuarios = ""
+    if session["tipo"] == "admin":
+        botao_usuarios = """
+        <div style="margin-top:10px">
+        <a href="/usuarios"><button>👥 Usuários</button></a>
+        </div>
+        """
+
     html = f"""
     <html>
     <style>
@@ -124,7 +131,7 @@ def sistema():
     table{{width:100%;border-collapse:collapse}}
     th{{background:#2a5298;color:white}}
     td,th{{padding:10px;text-align:center;border-bottom:1px solid #ddd}}
-    button{{padding:10px;background:#2a5298;color:white;border:none;border-radius:8px;cursor:pointer}}
+    button{{padding:8px;background:#2a5298;color:white;border:none;border-radius:6px;cursor:pointer}}
     input,select{{padding:10px;margin:5px;width:100%;border-radius:6px;border:1px solid #ccc}}
     .ok{{color:green;font-weight:bold}}
     .comprar{{color:red;font-weight:bold}}
@@ -138,10 +145,13 @@ def sistema():
     .OUTROS{{background:#dc3545}}
     </style>
 
-    <div class="topbar">📦 CONTROLE DE ESTOQUE | {session["user"]}</div>
+    <div class="topbar">
+    📦 CONTROLE DE ESTOQUE | {session["user"]}
+    {botao_usuarios}
+    </div>
 
     <div class="card">
-    <form method="POST" action="/inserir" onsubmit="return confirmarMov()">
+    <form method="POST" action="/inserir">
 
     <select name="ger" id="gerSelect">
     {"".join([f"<option>{g}</option>" for g in GERENCIADORAS])}
@@ -173,94 +183,69 @@ def sistema():
         <th>Item</th>
         <th>Entrada</th>
         <th>Saída</th>
-        <th>Estoque Atual</th>
-        <th>Média Mensal</th>
-        <th>Previsão (6 Meses + 20%)</th>
+        <th>Estoque</th>
+        <th>Média</th>
+        <th>Previsão</th>
         <th>Status</th>
+        <th>Ação</th>
         </tr>
         """
 
         for d in lista:
             cls = "ok" if d["status"]=="OK" else "comprar"
 
+            if session["tipo"] == "admin":
+                acao = f"""
+                <form method='POST' action='/remover_item'
+                onsubmit="return confirm('Excluir item do estoque?')">
+                <input type='hidden' name='ger' value='{d['ger']}'>
+                <input type='hidden' name='item' value='{d['item']}'>
+                <button style='background:#dc3545'>🗑</button>
+                </form>
+                """
+            else:
+                acao = "-"
+
             html += f"""
             <tr>
             <td>{d['item']}</td>
             <td>{d['entrada']}</td>
             <td>{d['saida']}</td>
-            <td style="font-weight:bold">{d['saldo']}</td>
+            <td><b>{d['saldo']}</b></td>
             <td>{d['media']}</td>
             <td>{d['proj']}</td>
             <td class="{cls}">{d['status']}</td>
+            <td>{acao}</td>
             </tr>
             """
 
         html += "</table></div>"
 
-    html += f"""
-<script>
-
-const itens = {json.dumps(itens)};
-const ger = document.getElementById("gerSelect");
-const item = document.getElementById("itemSelect");
-
-function atualizar(){{
-    if(!item) return;
-    item.innerHTML="";
-    (itens[ger.value] || []).forEach(i => {{
-        let o = document.createElement("option");
-        o.text = i;
-        item.add(o);
-    }});
-}}
-
-ger.onchange = atualizar;
-window.onload = atualizar;
-
-function confirmarMov(){{
-let tipo=document.querySelector("select[name='tipo']").value;
-let item=document.querySelector("[name='item']").value;
-let qtd=document.querySelector("[name='qtd']").value;
-let ger=document.querySelector("[name='ger']").value;
-
-let msg="";
-
-if(tipo=="ENTRADA"){{
-msg="Confirmar ENTRADA no estoque?";
-}}else{{
-msg="Confirmar SAIDA do estoque?";
-}}
-
-return confirm(
-msg+"\\n\\n"+
-"Gerenciadora: "+ger+"\\n"+
-"Item: "+item+"\\n"+
-"Quantidade: "+qtd
-);
-}}
-
-function filtrarItens(){{
-let filtro=document.getElementById("buscarItem").value.toLowerCase();
-let select=document.getElementById("itemSelect");
-let options=select.options;
-
-for(let i=0;i<options.length;i++){{
-let txt=options[i].text.toLowerCase();
-
-if(txt.includes(filtro)){{
-options[i].style.display="";
-}}else{{
-options[i].style.display="none";
-}}
-
-}}
-}}
-
-</script>
-</html>
-"""
+    html += "</html>"
 
     return html
+
+
+# =========================
+# REMOVER ITEM
+# =========================
+@app.route("/remover_item", methods=["POST"])
+def remover_item():
+
+    if session.get("tipo") != "admin":
+        return redirect("/sistema")
+
+    ger = request.form["ger"]
+    item = request.form["item"]
+
+    Movimentacao.query.filter_by(
+        gerenciadora=ger,
+        item=item
+    ).delete()
+
+    db.session.commit()
+
+    return redirect("/sistema")
 
 
 # =========================
