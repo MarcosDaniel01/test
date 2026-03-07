@@ -112,6 +112,14 @@ def sistema():
         <select name='item' id='itemSelect'></select>
         """
 
+    botao_usuarios = ""
+    if session["tipo"] == "admin":
+        botao_usuarios = """
+        <div style="margin-top:10px">
+        <a href="/usuarios"><button>👥 Usuários</button></a>
+        </div>
+        """
+
     html = f"""
     <html>
     <style>
@@ -137,7 +145,10 @@ def sistema():
     .OUTROS{{background:#dc3545}}
     </style>
 
-    <div class="topbar">📦 CONTROLE DE ESTOQUE | {session["user"]}</div>
+    <div class="topbar">
+    📦 CONTROLE DE ESTOQUE | {session["user"]}
+    {botao_usuarios}
+    </div>
 
     <div class="card">
     <form method="POST" action="/inserir" onsubmit="return confirmarMov()">
@@ -198,7 +209,6 @@ def sistema():
 
     html += f"""
 <script>
-
 const itens = {json.dumps(itens)};
 const ger = document.getElementById("gerSelect");
 const item = document.getElementById("itemSelect");
@@ -215,52 +225,133 @@ function atualizar(){{
 
 ger.onchange = atualizar;
 window.onload = atualizar;
-
-function confirmarMov(){{
-let tipo=document.querySelector("select[name='tipo']").value;
-let item=document.querySelector("[name='item']").value;
-let qtd=document.querySelector("[name='qtd']").value;
-let ger=document.querySelector("[name='ger']").value;
-
-let msg="";
-
-if(tipo=="ENTRADA"){{
-msg="Confirmar ENTRADA no estoque?";
-}}else{{
-msg="Confirmar SAIDA do estoque?";
-}}
-
-return confirm(
-msg+"\\n\\n"+
-"Gerenciadora: "+ger+"\\n"+
-"Item: "+item+"\\n"+
-"Quantidade: "+qtd
-);
-}}
-
-function filtrarItens(){{
-let filtro=document.getElementById("buscarItem").value.toLowerCase();
-let select=document.getElementById("itemSelect");
-let options=select.options;
-
-for(let i=0;i<options.length;i++){{
-let txt=options[i].text.toLowerCase();
-
-if(txt.includes(filtro)){{
-options[i].style.display="";
-}}else{{
-options[i].style.display="none";
-}}
-
-}}
-}}
-
 </script>
 </html>
 """
 
     return html
 
+# =========================
+# GERENCIAR USUÁRIOS
+# =========================
+@app.route("/usuarios")
+def usuarios():
+
+    if "user" not in session or session["tipo"] != "admin":
+        return redirect("/sistema")
+
+    usuarios = Usuario.query.all()
+
+    html = """
+    <html>
+    <style>
+    body{font-family:Arial;background:#eef2f7;margin:0}
+    .topbar{background:#1e3c72;color:white;padding:20px;text-align:center;font-size:22px}
+    .card{background:white;margin:20px;padding:20px;border-radius:12px;
+    box-shadow:0 4px 10px rgba(0,0,0,0.1)}
+    table{width:100%;border-collapse:collapse}
+    th{background:#2a5298;color:white}
+    td,th{padding:10px;text-align:center;border-bottom:1px solid #ddd}
+    input,select{padding:10px;margin:5px;width:100%;border-radius:6px;border:1px solid #ccc}
+    button{padding:10px;background:#2a5298;color:white;border:none;border-radius:8px}
+    .del{background:#dc3545}
+    </style>
+
+    <div class="topbar">👥 GERENCIAR USUÁRIOS</div>
+
+    <div class="card">
+    <h3>Adicionar Usuário</h3>
+
+    <form method="POST" action="/add_usuario">
+    <input name="usuario" placeholder="Usuário" required>
+    <input name="senha" placeholder="Senha" required>
+
+    <select name="tipo">
+    <option value="operador">OPERADOR</option>
+    <option value="admin">ADMIN</option>
+    </select>
+
+    <button>Adicionar</button>
+    </form>
+    </div>
+
+    <div class="card">
+    <table>
+    <tr>
+    <th>ID</th>
+    <th>Usuário</th>
+    <th>Tipo</th>
+    <th>Ação</th>
+    </tr>
+    """
+
+    for u in usuarios:
+
+        html += f"""
+        <tr>
+        <td>{u.id}</td>
+        <td>{u.usuario}</td>
+        <td>{u.tipo}</td>
+        <td>
+        <form method="POST" action="/del_usuario">
+        <input type="hidden" name="id" value="{u.id}">
+        <button class="del">Excluir</button>
+        </form>
+        </td>
+        </tr>
+        """
+
+    html += """
+    </table>
+    </div>
+
+    <div style="text-align:center;margin:20px;">
+    <a href="/sistema"><button>Voltar</button></a>
+    </div>
+    </html>
+    """
+
+    return html
+
+@app.route("/add_usuario", methods=["POST"])
+def add_usuario():
+
+    if session.get("tipo") != "admin":
+        return redirect("/sistema")
+
+    usuario = request.form["usuario"]
+    senha = request.form["senha"]
+    tipo = request.form["tipo"]
+
+    if not Usuario.query.filter_by(usuario=usuario).first():
+
+        db.session.add(
+            Usuario(
+                usuario=usuario,
+                senha=senha,
+                tipo=tipo
+            )
+        )
+
+        db.session.commit()
+
+    return redirect("/usuarios")
+
+@app.route("/del_usuario", methods=["POST"])
+def del_usuario():
+
+    if session.get("tipo") != "admin":
+        return redirect("/sistema")
+
+    uid = request.form["id"]
+
+    user = Usuario.query.get(uid)
+
+    if user and user.usuario != "admin":
+        db.session.delete(user)
+        db.session.commit()
+
+    return redirect("/usuarios")
 
 # =========================
 # INSERIR MOVIMENTAÇÃO
@@ -278,7 +369,6 @@ def inserir():
     db.session.commit()
 
     return redirect("/sistema")
-
 
 # =========================
 # CALCULAR ESTOQUE
@@ -325,7 +415,6 @@ def calcular():
         })
 
     return final
-
 
 # =========================
 # RUN
