@@ -53,7 +53,9 @@ with app.app_context():
 # =========================
 @app.route("/", methods=["GET","POST"])
 def login():
+
     if request.method == "POST":
+
         user = Usuario.query.filter_by(
             usuario=request.form["usuario"],
             senha=request.form["senha"]
@@ -73,13 +75,16 @@ def login():
     input{width:100%;padding:10px;margin:10px 0;border-radius:8px;border:1px solid #ccc;}
     button{background:#2980b9;color:white;padding:10px;width:100%;border:none;border-radius:8px;}
     </style>
+
     <div class="box">
     <h2>Login</h2>
+
     <form method="post">
     <input name="usuario" placeholder="Usuário">
     <input name="senha" type="password" placeholder="Senha">
     <button>Entrar</button>
     </form>
+
     </div>
     </html>
     """
@@ -89,6 +94,7 @@ def login():
 # =========================
 @app.route("/sistema")
 def sistema():
+
     if "user" not in session:
         return redirect("/")
 
@@ -122,20 +128,31 @@ def sistema():
 
     html = f"""
     <html>
+
     <style>
+
     body{{margin:0;font-family:Arial;background:#eef2f7}}
+
     .topbar{{background:linear-gradient(90deg,#1e3c72,#2a5298);
     color:white;padding:20px;text-align:center;font-size:22px}}
+
     .card{{background:white;margin:20px;padding:20px;border-radius:12px;
     box-shadow:0 4px 10px rgba(0,0,0,0.1)}}
+
     table{{width:100%;border-collapse:collapse}}
+
     th{{background:#2a5298;color:white}}
+
     td,th{{padding:10px;text-align:center;border-bottom:1px solid #ddd}}
-    button{{padding:8px;background:#2a5298;color:white;border:none;border-radius:6px;cursor:pointer}}
+
+    button{{padding:8px;background:#2a5298;color:white;border:none;border-radius:6px}}
+
     input,select{{padding:10px;margin:5px;width:100%;border-radius:6px;border:1px solid #ccc}}
+
     .ok{{color:green;font-weight:bold}}
+
     .comprar{{color:red;font-weight:bold}}
-    .gerenciadora{{margin-top:30px;border-radius:12px;overflow:hidden}}
+
     .titulo{{padding:12px;color:white;font-weight:bold}}
 
     .PRIME{{background:#fd7e14}}
@@ -143,6 +160,7 @@ def sistema():
     .LINK{{background:#004085}}
     .FITMOBY{{background:#6f42c1}}
     .OUTROS{{background:#dc3545}}
+
     </style>
 
     <div class="topbar">
@@ -151,6 +169,7 @@ def sistema():
     </div>
 
     <div class="card">
+
     <form method="POST" action="/inserir">
 
     <select name="ger" id="gerSelect">
@@ -169,16 +188,21 @@ def sistema():
     <button>Salvar Movimentação</button>
 
     </form>
+
     </div>
     """
 
     for g in GERENCIADORAS:
+
         lista = grupos.get(g, [])
 
         html += f"""
-        <div class="card gerenciadora">
-        <div class="titulo {g}">🏢 {g}</div>
+        <div class="card">
+
+        <div class="titulo {g}">{g}</div>
+
         <table>
+
         <tr>
         <th>Item</th>
         <th>Entrada</th>
@@ -192,22 +216,31 @@ def sistema():
         """
 
         for d in lista:
+
             cls = "ok" if d["status"]=="OK" else "comprar"
 
             if session["tipo"] == "admin":
+
                 acao = f"""
                 <form method='POST' action='/remover_item'
                 onsubmit="return confirm('Excluir item do estoque?')">
+
                 <input type='hidden' name='ger' value='{d['ger']}'>
                 <input type='hidden' name='item' value='{d['item']}'>
+
                 <button style='background:#dc3545'>🗑</button>
+
                 </form>
                 """
+
             else:
+
                 acao = "-"
 
             html += f"""
+
             <tr>
+
             <td>{d['item']}</td>
             <td>{d['entrada']}</td>
             <td>{d['saida']}</td>
@@ -216,12 +249,70 @@ def sistema():
             <td>{d['proj']}</td>
             <td class="{cls}">{d['status']}</td>
             <td>{acao}</td>
+
             </tr>
             """
 
         html += "</table></div>"
 
-    html += "</html>"
+    html += f"""
+
+<script>
+
+const itens = {json.dumps(itens)}
+
+const ger = document.getElementById("gerSelect");
+const item = document.getElementById("itemSelect");
+
+function atualizar(){{
+if(!item) return;
+
+item.innerHTML="";
+
+(itens[ger.value] || []).forEach(i => {{
+
+let o = document.createElement("option");
+o.text = i;
+
+item.add(o);
+
+}});
+
+}}
+
+ger.onchange = atualizar;
+window.onload = atualizar;
+
+function filtrarItens(){{
+
+let filtro=document.getElementById("buscarItem").value.toLowerCase();
+
+let select=document.getElementById("itemSelect");
+
+let options=select.options;
+
+for(let i=0;i<options.length;i++){{
+
+let txt=options[i].text.toLowerCase();
+
+if(txt.includes(filtro)){{
+
+options[i].style.display="";
+
+}}else{{
+
+options[i].style.display="none";
+
+}}
+
+}}
+
+}}
+
+</script>
+
+</html>
+"""
 
     return html
 
@@ -246,6 +337,95 @@ def remover_item():
     db.session.commit()
 
     return redirect("/sistema")
+
+
+# =========================
+# USUARIOS
+# =========================
+@app.route("/usuarios")
+def usuarios():
+
+    if session.get("tipo") != "admin":
+        return redirect("/sistema")
+
+    usuarios = Usuario.query.all()
+
+    html = "<h2>Usuários</h2>"
+
+    for u in usuarios:
+
+        html += f"""
+        <p>{u.usuario} ({u.tipo})
+
+        <form method='POST' action='/del_usuario'>
+
+        <input type='hidden' name='id' value='{u.id}'>
+
+        <button>Excluir</button>
+
+        </form>
+
+        </p>
+        """
+
+    html += """
+
+    <h3>Criar Usuário</h3>
+
+    <form method='POST' action='/add_usuario'>
+
+    <input name='usuario' placeholder='Usuário'>
+    <input name='senha' placeholder='Senha'>
+
+    <select name='tipo'>
+    <option value='operador'>OPERADOR</option>
+    <option value='admin'>ADMIN</option>
+    </select>
+
+    <button>Criar</button>
+
+    </form>
+
+    <br><a href='/sistema'>Voltar</a>
+    """
+
+    return html
+
+
+@app.route("/add_usuario", methods=["POST"])
+def add_usuario():
+
+    if session.get("tipo") != "admin":
+        return redirect("/sistema")
+
+    usuario = request.form["usuario"]
+    senha = request.form["senha"]
+    tipo = request.form["tipo"]
+
+    novo = Usuario(usuario=usuario, senha=senha, tipo=tipo)
+
+    db.session.add(novo)
+    db.session.commit()
+
+    return redirect("/usuarios")
+
+
+@app.route("/del_usuario", methods=["POST"])
+def del_usuario():
+
+    if session.get("tipo") != "admin":
+        return redirect("/sistema")
+
+    uid = request.form["id"]
+
+    user = Usuario.query.get(uid)
+
+    if user.usuario != "admin":
+
+        db.session.delete(user)
+        db.session.commit()
+
+    return redirect("/usuarios")
 
 
 # =========================
