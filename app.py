@@ -1,225 +1,335 @@
+
 from flask import Flask, request, redirect, session
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 import os
+import json
 
 app = Flask(__name__)
-app.secret_key = "estoque_secret"
+app.secret_key = "segredo"
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if DATABASE_URL:
     if DATABASE_URL.startswith("postgres://"):
-        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://")
+else:
+    DATABASE_URL = "sqlite:///local.db"
 
 app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 
-# USUARIOS
-usuarios = {
-    "admin": {"senha": "admin123", "tipo": "admin"},
-    "operador": {"senha": "op123", "tipo": "operador"}
-}
-
-# TABELA ITEM
-class Item(db.Model):
+# =========================
+# MODELS
+# =========================
+class Usuario(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    nome = db.Column(db.String(100))
-    quantidade = db.Column(db.Integer)
+    usuario = db.Column(db.String(50), unique=True)
+    senha = db.Column(db.String(50))
+    tipo = db.Column(db.String(20))
 
-# HISTORICO
-class Movimento(db.Model):
+class Movimentacao(db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    data = db.Column(db.DateTime, default=datetime.now)
+    gerenciadora = db.Column(db.String(50))
+    tipo = db.Column(db.String(10))
     item = db.Column(db.String(100))
     quantidade = db.Column(db.Integer)
-    tipo = db.Column(db.String(20))
-    usuario = db.Column(db.String(50))
-    data = db.Column(db.DateTime, default=datetime.utcnow)
 
+GERENCIADORAS = ["PRIME", "LINK", "NEO", "FITMOBY", "OUTROS"]
+
+# =========================
+# INIT
+# =========================
+with app.app_context():
+    db.create_all()
+    if not Usuario.query.filter_by(usuario="admin").first():
+        db.session.add(Usuario(usuario="admin", senha="123", tipo="admin"))
+        db.session.commit()
+
+# =========================
 # LOGIN
+# =========================
 @app.route("/", methods=["GET","POST"])
 def login():
     if request.method == "POST":
-        user = request.form["user"]
-        senha = request.form["senha"]
+        user = Usuario.query.filter_by(
+            usuario=request.form["usuario"],
+            senha=request.form["senha"]
+        ).first()
 
-        if user in usuarios and usuarios[user]["senha"] == senha:
-            session["user"] = user
-            session["tipo"] = usuarios[user]["tipo"]
-            return redirect("/estoque")
+        if user:
+            session["user"] = user.usuario
+            session["tipo"] = user.tipo
+            return redirect("/sistema")
 
-        return "Login inválido"
-
-    return '''
+    return """
+    <html>
+    <style>
+    body{font-family:Arial;background:linear-gradient(120deg,#2980b9,#6dd5fa);
+    display:flex;justify-content:center;align-items:center;height:100vh;}
+    .box{background:white;padding:40px;border-radius:12px;width:300px;text-align:center;}
+    input{width:100%;padding:10px;margin:10px 0;border-radius:8px;border:1px solid #ccc;}
+    button{background:#2980b9;color:white;padding:10px;width:100%;border:none;border-radius:8px;}
+    </style>
+    <div class="box">
     <h2>Login</h2>
     <form method="post">
-    Usuario <input name="user"><br>
-    Senha <input name="senha" type="password"><br>
+    <input name="usuario" placeholder="Usuário">
+    <input name="senha" type="password" placeholder="Senha">
     <button>Entrar</button>
     </form>
-    '''
+    </div>
+    </html>
+    """
 
-# ESTOQUE
-@app.route("/estoque")
-def estoque():
+# =========================
+# SISTEMA
+# =========================
+@app.route("/sistema")
+def sistema():
     if "user" not in session:
         return redirect("/")
 
-    itens = Item.query.all()
+    dados = calcular()
 
-    html = "<h1>Estoque</h1>"
+    grupos = {}
+    for d in dados:
+        grupos.setdefault(d["ger"], []).append(d)
 
-    for i in itens:
-        html += f"{i.nome} - {i.quantidade}<br>"
+    itens = {}
+    for d in Movimentacao.query.all():
+        itens.setdefault(d.gerenciadora, set()).add(d.item)
 
-    html += '''
-    <h2>Adicionar</h2>
-    <form action="/confirmar_add" method="post">
-    Item <input name="item"><br>
-    Quantidade <input name="quantidade"><br>
-    <button>Continuar</button>
-    </form>
+    itens = {k:list(v) for k,v in itens.items()}
 
-    <h2>Remover</h2>
-    <form action="/confirmar_remover" method="post">
-    Item <input name="item"><br>
-    Quantidade <input name="quantidade"><br>
-    <button>Continuar</button>
-    </form>
-
-    <br><a href="/historico">Ver histórico</a>
-    <br><a href="/logout">Sair</a>
-    '''
-
-    return html
-
-# CONFIRMAR ADIÇÃO
-@app.route("/confirmar_add", methods=["POST"])
-def confirmar_add():
-
-    item = request.form["item"]
-    quantidade = int(request.form["quantidade"])
-
-    return f'''
-    <h2>Confirmação</h2>
-
-    Item: {item}<br>
-    Quantidade: {quantidade}<br><br>
-
-    É isso mesmo?
-
-    <form action="/add" method="post">
-    <input type="hidden" name="item" value="{item}">
-    <input type="hidden" name="quantidade" value="{quantidade}">
-    <button>Confirmar</button>
-    </form>
-
-    <a href="/estoque">Cancelar</a>
-    '''
-
-# ADICIONAR
-@app.route("/add", methods=["POST"])
-def add():
-
-    item = request.form["item"]
-    quantidade = int(request.form["quantidade"])
-
-    registro = Item.query.filter_by(nome=item).first()
-
-    if registro:
-        registro.quantidade += quantidade
+    if session["tipo"] == "admin":
+        campo_item = "<input name='item' required placeholder='Novo item'>"
     else:
-        registro = Item(nome=item, quantidade=quantidade)
-        db.session.add(registro)
+        campo_item = """
+        <input type='text' id='buscarItem' placeholder='🔎 Buscar item...' onkeyup='filtrarItens()'>
+        <select name='item' id='itemSelect'></select>
+        """
 
-    mov = Movimento(
-        item=item,
-        quantidade=quantidade,
-        tipo="entrada",
-        usuario=session["user"]
-    )
+    html = f"""
+    <html>
+    <style>
+    body{{margin:0;font-family:Arial;background:#eef2f7}}
+    .topbar{{background:linear-gradient(90deg,#1e3c72,#2a5298);
+    color:white;padding:20px;text-align:center;font-size:22px}}
+    .card{{background:white;margin:20px;padding:20px;border-radius:12px;
+    box-shadow:0 4px 10px rgba(0,0,0,0.1)}}
+    table{{width:100%;border-collapse:collapse}}
+    th{{background:#2a5298;color:white}}
+    td,th{{padding:10px;text-align:center;border-bottom:1px solid #ddd}}
+    button{{padding:10px;background:#2a5298;color:white;border:none;border-radius:8px;cursor:pointer}}
+    input,select{{padding:10px;margin:5px;width:100%;border-radius:6px;border:1px solid #ccc}}
+    .ok{{color:green;font-weight:bold}}
+    .comprar{{color:red;font-weight:bold}}
+    .gerenciadora{{margin-top:30px;border-radius:12px;overflow:hidden}}
+    .titulo{{padding:12px;color:white;font-weight:bold}}
 
-    db.session.add(mov)
-    db.session.commit()
+    .PRIME{{background:#fd7e14}}
+    .NEO{{background:#28a745}}
+    .LINK{{background:#004085}}
+    .FITMOBY{{background:#6f42c1}}
+    .OUTROS{{background:#dc3545}}
+    </style>
 
-    return "Item adicionado com sucesso <br><a href='/estoque'>Voltar</a>"
+    <div class="topbar">📦 CONTROLE DE ESTOQUE | {session["user"]}</div>
 
-# CONFIRMAR REMOÇÃO
-@app.route("/confirmar_remover", methods=["POST"])
-def confirmar_remover():
+    <div class="card">
+    <form method="POST" action="/inserir" onsubmit="return confirmarMov()">
 
-    item = request.form["item"]
-    quantidade = int(request.form["quantidade"])
+    <select name="ger" id="gerSelect">
+    {"".join([f"<option>{g}</option>" for g in GERENCIADORAS])}
+    </select>
 
-    return f'''
-    <h2>Confirmação</h2>
+    <select name="tipo">
+    <option value="ENTRADA">ENTRADA</option>
+    <option value="SAIDA">SAIDA</option>
+    </select>
 
-    Item: {item}<br>
-    Quantidade: {quantidade}<br><br>
+    {campo_item}
 
-    Tem certeza que deseja remover?
+    <input name="qtd" type="number" required placeholder="Quantidade">
 
-    <form action="/remover" method="post">
-    <input type="hidden" name="item" value="{item}">
-    <input type="hidden" name="quantidade" value="{quantidade}">
-    <button>Confirmar</button>
+    <button>Salvar Movimentação</button>
+
     </form>
+    </div>
+    """
 
-    <a href="/estoque">Cancelar</a>
-    '''
+    for g in GERENCIADORAS:
+        lista = grupos.get(g, [])
 
-# REMOVER
-@app.route("/remover", methods=["POST"])
-def remover():
+        html += f"""
+        <div class="card gerenciadora">
+        <div class="titulo {g}">🏢 {g}</div>
+        <table>
+        <tr>
+        <th>Item</th>
+        <th>Entrada</th>
+        <th>Saída</th>
+        <th>Estoque Atual</th>
+        <th>Média Mensal</th>
+        <th>Previsão (6 Meses + 20%)</th>
+        <th>Status</th>
+        </tr>
+        """
 
-    item = request.form["item"]
-    quantidade = int(request.form["quantidade"])
+        for d in lista:
+            cls = "ok" if d["status"]=="OK" else "comprar"
 
-    registro = Item.query.filter_by(nome=item).first()
+            html += f"""
+            <tr>
+            <td>{d['item']}</td>
+            <td>{d['entrada']}</td>
+            <td>{d['saida']}</td>
+            <td style="font-weight:bold">{d['saldo']}</td>
+            <td>{d['media']}</td>
+            <td>{d['proj']}</td>
+            <td class="{cls}">{d['status']}</td>
+            </tr>
+            """
 
-    if not registro:
-        return "Item não existe <br><a href='/estoque'>Voltar</a>"
+        html += "</table></div>"
 
-    if registro.quantidade < quantidade:
-        return "Estoque insuficiente <br><a href='/estoque'>Voltar</a>"
+    html += f"""
+<script>
 
-    registro.quantidade -= quantidade
+const itens = {json.dumps(itens)};
+const ger = document.getElementById("gerSelect");
+const item = document.getElementById("itemSelect");
 
-    mov = Movimento(
-        item=item,
-        quantidade=quantidade,
-        tipo="saida",
-        usuario=session["user"]
-    )
+function atualizar(){{
+    if(!item) return;
+    item.innerHTML="";
+    (itens[ger.value] || []).forEach(i => {{
+        let o = document.createElement("option");
+        o.text = i;
+        item.add(o);
+    }});
+}}
 
-    db.session.add(mov)
-    db.session.commit()
+ger.onchange = atualizar;
+window.onload = atualizar;
 
-    return "Item removido com sucesso <br><a href='/estoque'>Voltar</a>"
+function confirmarMov(){{
+let tipo=document.querySelector("select[name='tipo']").value;
+let item=document.querySelector("[name='item']").value;
+let qtd=document.querySelector("[name='qtd']").value;
+let ger=document.querySelector("[name='ger']").value;
 
-# HISTORICO
-@app.route("/historico")
-def historico():
+let msg="";
 
-    movs = Movimento.query.order_by(Movimento.data.desc()).all()
+if(tipo=="ENTRADA"){{
+msg="Confirmar ENTRADA no estoque?";
+}}else{{
+msg="Confirmar SAIDA do estoque?";
+}}
 
-    html = "<h1>Histórico</h1>"
+return confirm(
+msg+"\\n\\n"+
+"Gerenciadora: "+ger+"\\n"+
+"Item: "+item+"\\n"+
+"Quantidade: "+qtd
+);
+}}
 
-    for m in movs:
-        html += f"{m.data} - {m.usuario} - {m.tipo} - {m.item} - {m.quantidade}<br>"
+function filtrarItens(){{
+let filtro=document.getElementById("buscarItem").value.toLowerCase();
+let select=document.getElementById("itemSelect");
+let options=select.options;
 
-    html += "<br><a href='/estoque'>Voltar</a>"
+for(let i=0;i<options.length;i++){{
+let txt=options[i].text.toLowerCase();
+
+if(txt.includes(filtro)){{
+options[i].style.display="";
+}}else{{
+options[i].style.display="none";
+}}
+
+}}
+}}
+
+</script>
+</html>
+"""
 
     return html
 
-# LOGOUT
-@app.route("/logout")
-def logout():
-    session.clear()
-    return redirect("/")
 
-# INICIAR
+# =========================
+# INSERIR MOVIMENTAÇÃO
+# =========================
+@app.route("/inserir", methods=["POST"])
+def inserir():
+
+    db.session.add(Movimentacao(
+        gerenciadora=request.form["ger"],
+        tipo=request.form["tipo"],
+        item=request.form["item"].upper(),
+        quantidade=int(request.form["qtd"])
+    ))
+
+    db.session.commit()
+
+    return redirect("/sistema")
+
+
+# =========================
+# CALCULAR ESTOQUE
+# =========================
+def calcular():
+
+    dados = Movimentacao.query.all()
+
+    res = {}
+
+    for d in dados:
+
+        chave = (d.gerenciadora, d.item)
+
+        if chave not in res:
+            res[chave] = {"entrada":0,"saida":0}
+
+        if d.tipo == "ENTRADA":
+            res[chave]["entrada"] += d.quantidade
+        else:
+            res[chave]["saida"] += d.quantidade
+
+    final = []
+
+    for (g,i),v in res.items():
+
+        estoque_atual = v["entrada"] - v["saida"]
+
+        media = v["saida"]
+
+        proj = int(media * 6 * 1.2)
+
+        status = "OK" if estoque_atual >= proj else "COMPRAR"
+
+        final.append({
+            "ger":g,
+            "item":i,
+            "entrada":v["entrada"],
+            "saida":v["saida"],
+            "saldo":estoque_atual,
+            "media":media,
+            "proj":proj,
+            "status":status
+        })
+
+    return final
+
+
+# =========================
+# RUN
+# =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT",10000)))
