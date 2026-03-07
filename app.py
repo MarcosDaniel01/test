@@ -1,3 +1,4 @@
+```python
 from flask import Flask, request, redirect, session
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
@@ -89,8 +90,19 @@ def login():
 # =========================
 @app.route("/sistema")
 def sistema():
+
     if "user" not in session:
         return redirect("/")
+
+    msg_html = ""
+    if "msg" in session:
+        msg_html = f"""
+        <div style="background:#d4edda;color:#155724;padding:15px;
+        margin:20px;border-radius:8px;text-align:center;font-weight:bold;">
+        {session["msg"]}
+        </div>
+        """
+        session.pop("msg")
 
     dados = calcular()
 
@@ -135,14 +147,6 @@ def sistema():
     input,select{{padding:10px;margin:5px;width:100%;border-radius:6px;border:1px solid #ccc}}
     .ok{{color:green;font-weight:bold}}
     .comprar{{color:red;font-weight:bold}}
-    .gerenciadora{{margin-top:30px;border-radius:12px;overflow:hidden}}
-    .titulo{{padding:12px;color:white;font-weight:bold}}
-
-    .PRIME{{background:#fd7e14}}
-    .NEO{{background:#28a745}}
-    .LINK{{background:#004085}}
-    .FITMOBY{{background:#6f42c1}}
-    .OUTROS{{background:#dc3545}}
     </style>
 
     <div class="topbar">
@@ -150,8 +154,10 @@ def sistema():
     {botao_usuarios}
     </div>
 
+    {msg_html}
+
     <div class="card">
-    <form method="POST" action="/inserir">
+    <form method="POST" action="/inserir" onsubmit="return confirmarMov()">
 
     <select name="ger" id="gerSelect">
     {"".join([f"<option>{g}</option>" for g in GERENCIADORAS])}
@@ -173,19 +179,18 @@ def sistema():
     """
 
     for g in GERENCIADORAS:
+
         lista = grupos.get(g, [])
 
         html += f"""
-        <div class="card gerenciadora">
-        <div class="titulo {g}">🏢 {g}</div>
+        <div class="card">
+        <h3>{g}</h3>
         <table>
         <tr>
         <th>Item</th>
         <th>Entrada</th>
         <th>Saída</th>
-        <th>Estoque Atual</th>
-        <th>Média Mensal</th>
-        <th>Previsão (6 Meses + 20%)</th>
+        <th>Estoque</th>
         <th>Status</th>
         <th>Ação</th>
         </tr>
@@ -195,10 +200,11 @@ def sistema():
 
             cls = "ok" if d["status"]=="OK" else "comprar"
 
-            botao_remover = ""
+            remover = ""
+
             if session["tipo"] == "admin":
-                botao_remover = f"""
-                <form method='POST' action='/remover_item' onsubmit="return confirm('Remover item do sistema?')">
+                remover = f"""
+                <form method='POST' action='/remover_item' onsubmit="return confirm('Remover item {d['item']}?')">
                 <input type='hidden' name='ger' value='{d["ger"]}'>
                 <input type='hidden' name='item' value='{d["item"]}'>
                 <button style='background:#dc3545'>Remover</button>
@@ -210,19 +216,55 @@ def sistema():
             <td>{d['item']}</td>
             <td>{d['entrada']}</td>
             <td>{d['saida']}</td>
-            <td style="font-weight:bold">{d['saldo']}</td>
-            <td>{d['media']}</td>
-            <td>{d['proj']}</td>
+            <td>{d['saldo']}</td>
             <td class="{cls}">{d['status']}</td>
-            <td>{botao_remover}</td>
+            <td>{remover}</td>
             </tr>
             """
 
         html += "</table></div>"
 
-    html += "</html>"
+    html += f"""
+<script>
+
+const itens = {json.dumps(itens)};
+const ger = document.getElementById("gerSelect");
+const item = document.getElementById("itemSelect");
+
+function atualizar(){{
+    if(!item) return;
+    item.innerHTML="";
+    (itens[ger.value] || []).forEach(i => {{
+        let o = document.createElement("option");
+        o.text = i;
+        item.add(o);
+    }});
+}}
+
+ger.onchange = atualizar;
+window.onload = atualizar;
+
+function confirmarMov(){{
+let tipo=document.querySelector("select[name='tipo']").value;
+let item=document.querySelector("[name='item']").value;
+let qtd=document.querySelector("[name='qtd']").value;
+let ger=document.querySelector("[name='ger']").value;
+
+return confirm(
+"Confirmar movimentação?\\n\\n"+
+"Tipo: "+tipo+"\\n"+
+"Gerenciadora: "+ger+"\\n"+
+"Item: "+item+"\\n"+
+"Quantidade: "+qtd
+);
+}}
+
+</script>
+</html>
+"""
 
     return html
+
 
 # =========================
 # REMOVER ITEM
@@ -233,17 +275,15 @@ def remover_item():
     if session.get("tipo") != "admin":
         return redirect("/sistema")
 
-    ger = request.form["ger"]
-    item = request.form["item"]
-
     Movimentacao.query.filter_by(
-        gerenciadora=ger,
-        item=item
+        gerenciadora=request.form["ger"],
+        item=request.form["item"]
     ).delete()
 
     db.session.commit()
 
     return redirect("/sistema")
+
 
 # =========================
 # GERENCIAR USUÁRIOS
@@ -251,17 +291,18 @@ def remover_item():
 @app.route("/usuarios")
 def usuarios():
 
-    if "user" not in session or session["tipo"] != "admin":
+    if session.get("tipo") != "admin":
         return redirect("/sistema")
 
     usuarios = Usuario.query.all()
 
-    html = "<h2>Usuários</h2>"
+    html="<h2>Usuários</h2>"
 
     for u in usuarios:
-        html += f"{u.usuario} - {u.tipo}<br>"
+        html+=f"{u.usuario} - {u.tipo}<br>"
 
     return html
+
 
 # =========================
 # INSERIR MOVIMENTAÇÃO
@@ -269,16 +310,25 @@ def usuarios():
 @app.route("/inserir", methods=["POST"])
 def inserir():
 
-    db.session.add(Movimentacao(
-        gerenciadora=request.form["ger"],
-        tipo=request.form["tipo"],
-        item=request.form["item"].upper(),
-        quantidade=int(request.form["qtd"])
-    ))
+    try:
 
-    db.session.commit()
+        db.session.add(Movimentacao(
+            gerenciadora=request.form["ger"],
+            tipo=request.form["tipo"],
+            item=request.form["item"].upper(),
+            quantidade=int(request.form["qtd"])
+        ))
+
+        db.session.commit()
+
+        session["msg"] = "✅ Movimentação registrada com sucesso"
+
+    except:
+
+        session["msg"] = "❌ Erro ao registrar movimentação"
 
     return redirect("/sistema")
+
 
 # =========================
 # CALCULAR ESTOQUE
@@ -326,8 +376,10 @@ def calcular():
 
     return final
 
+
 # =========================
 # RUN
 # =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT",10000)))
+```
