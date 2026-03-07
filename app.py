@@ -1,4 +1,3 @@
-```python
 from flask import Flask, request, redirect, session
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
@@ -383,3 +382,4 @@ def calcular():
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT",10000)))
 ```
+
