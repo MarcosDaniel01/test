@@ -151,7 +151,7 @@ def sistema():
     </div>
 
     <div class="card">
-    <form method="POST" action="/inserir" onsubmit="return confirmarMov()">
+    <form method="POST" action="/inserir">
 
     <select name="ger" id="gerSelect">
     {"".join([f"<option>{g}</option>" for g in GERENCIADORAS])}
@@ -187,11 +187,23 @@ def sistema():
         <th>Média Mensal</th>
         <th>Previsão (6 Meses + 20%)</th>
         <th>Status</th>
+        <th>Ação</th>
         </tr>
         """
 
         for d in lista:
+
             cls = "ok" if d["status"]=="OK" else "comprar"
+
+            botao_remover = ""
+            if session["tipo"] == "admin":
+                botao_remover = f"""
+                <form method='POST' action='/remover_item' onsubmit="return confirm('Remover item do sistema?')">
+                <input type='hidden' name='ger' value='{d["ger"]}'>
+                <input type='hidden' name='item' value='{d["item"]}'>
+                <button style='background:#dc3545'>Remover</button>
+                </form>
+                """
 
             html += f"""
             <tr>
@@ -202,34 +214,36 @@ def sistema():
             <td>{d['media']}</td>
             <td>{d['proj']}</td>
             <td class="{cls}">{d['status']}</td>
+            <td>{botao_remover}</td>
             </tr>
             """
 
         html += "</table></div>"
 
-    html += f"""
-<script>
-const itens = {json.dumps(itens)};
-const ger = document.getElementById("gerSelect");
-const item = document.getElementById("itemSelect");
-
-function atualizar(){{
-    if(!item) return;
-    item.innerHTML="";
-    (itens[ger.value] || []).forEach(i => {{
-        let o = document.createElement("option");
-        o.text = i;
-        item.add(o);
-    }});
-}}
-
-ger.onchange = atualizar;
-window.onload = atualizar;
-</script>
-</html>
-"""
+    html += "</html>"
 
     return html
+
+# =========================
+# REMOVER ITEM
+# =========================
+@app.route("/remover_item", methods=["POST"])
+def remover_item():
+
+    if session.get("tipo") != "admin":
+        return redirect("/sistema")
+
+    ger = request.form["ger"]
+    item = request.form["item"]
+
+    Movimentacao.query.filter_by(
+        gerenciadora=ger,
+        item=item
+    ).delete()
+
+    db.session.commit()
+
+    return redirect("/sistema")
 
 # =========================
 # GERENCIAR USUÁRIOS
@@ -242,116 +256,12 @@ def usuarios():
 
     usuarios = Usuario.query.all()
 
-    html = """
-    <html>
-    <style>
-    body{font-family:Arial;background:#eef2f7;margin:0}
-    .topbar{background:#1e3c72;color:white;padding:20px;text-align:center;font-size:22px}
-    .card{background:white;margin:20px;padding:20px;border-radius:12px;
-    box-shadow:0 4px 10px rgba(0,0,0,0.1)}
-    table{width:100%;border-collapse:collapse}
-    th{background:#2a5298;color:white}
-    td,th{padding:10px;text-align:center;border-bottom:1px solid #ddd}
-    input,select{padding:10px;margin:5px;width:100%;border-radius:6px;border:1px solid #ccc}
-    button{padding:10px;background:#2a5298;color:white;border:none;border-radius:8px}
-    .del{background:#dc3545}
-    </style>
-
-    <div class="topbar">👥 GERENCIAR USUÁRIOS</div>
-
-    <div class="card">
-    <h3>Adicionar Usuário</h3>
-
-    <form method="POST" action="/add_usuario">
-    <input name="usuario" placeholder="Usuário" required>
-    <input name="senha" placeholder="Senha" required>
-
-    <select name="tipo">
-    <option value="operador">OPERADOR</option>
-    <option value="admin">ADMIN</option>
-    </select>
-
-    <button>Adicionar</button>
-    </form>
-    </div>
-
-    <div class="card">
-    <table>
-    <tr>
-    <th>ID</th>
-    <th>Usuário</th>
-    <th>Tipo</th>
-    <th>Ação</th>
-    </tr>
-    """
+    html = "<h2>Usuários</h2>"
 
     for u in usuarios:
-
-        html += f"""
-        <tr>
-        <td>{u.id}</td>
-        <td>{u.usuario}</td>
-        <td>{u.tipo}</td>
-        <td>
-        <form method="POST" action="/del_usuario">
-        <input type="hidden" name="id" value="{u.id}">
-        <button class="del">Excluir</button>
-        </form>
-        </td>
-        </tr>
-        """
-
-    html += """
-    </table>
-    </div>
-
-    <div style="text-align:center;margin:20px;">
-    <a href="/sistema"><button>Voltar</button></a>
-    </div>
-    </html>
-    """
+        html += f"{u.usuario} - {u.tipo}<br>"
 
     return html
-
-@app.route("/add_usuario", methods=["POST"])
-def add_usuario():
-
-    if session.get("tipo") != "admin":
-        return redirect("/sistema")
-
-    usuario = request.form["usuario"]
-    senha = request.form["senha"]
-    tipo = request.form["tipo"]
-
-    if not Usuario.query.filter_by(usuario=usuario).first():
-
-        db.session.add(
-            Usuario(
-                usuario=usuario,
-                senha=senha,
-                tipo=tipo
-            )
-        )
-
-        db.session.commit()
-
-    return redirect("/usuarios")
-
-@app.route("/del_usuario", methods=["POST"])
-def del_usuario():
-
-    if session.get("tipo") != "admin":
-        return redirect("/sistema")
-
-    uid = request.form["id"]
-
-    user = Usuario.query.get(uid)
-
-    if user and user.usuario != "admin":
-        db.session.delete(user)
-        db.session.commit()
-
-    return redirect("/usuarios")
 
 # =========================
 # INSERIR MOVIMENTAÇÃO
