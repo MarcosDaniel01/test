@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<body>
+
+<h2>Login</h2>
+<input id="user" placeholder="Usuário">
+<input id="pass" type="password">
+<button onclick="login()">Entrar</button>
+
+<hr>
+
+<h2>Sistema</h2>
+<input id="ger" placeholder="Gerenciadora">
+<input id="tipo" placeholder="ENTRADA/SAIDA">
+<input id="item" placeholder="Item">
+<input id="qtd" type="number">
+<button onclick="inserir()">Salvar</button>
+
+<button onclick="dados()">Ver Dados</button>
+
+<pre id="out"></pre>
+
+<script>
+async function login(){
+  const r = await fetch("/.netlify/functions/api/login",{
+    method:"POST",
+    body: JSON.stringify({usuario:user.value,senha:pass.value})
+  });
+  alert(await r.text());
+}
+
+async function inserir(){
+  await fetch("/.netlify/functions/api/inserir",{
+    method:"POST",
+    body: JSON.stringify({
+      ger:ger.value,tipo:tipo.value,item:item.value,qtd:qtd.value
+    })
+  });
+  alert("ok");
+}
+
+async function dados(){
+  const r = await fetch("/.netlify/functions/api/dados");
+  out.innerText = JSON.stringify(await r.json(),null,2);
+}
+</script>
+
+</body>
+</html>
