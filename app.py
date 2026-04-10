@@ -1,6 +1,4 @@
-
-
-Mantendo todo meu codigo from flask import Flask, request, redirect, session
+from flask import Flask, request, redirect, session
 
 from flask_sqlalchemy import SQLAlchemy
 
